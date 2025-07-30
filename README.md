@@ -186,9 +186,10 @@ vrecord -b start
 # Or: vrecord --no-beep start
 
 # Enable transcription globally
-vrecord -n start -t   # No MP3 conversion but transcribe enabled (won't transcribe without MP3)
-vrecord start -t      # Start with transcription
-vrecord stop          # Will transcribe if started with -t
+vrecord start -t    # Start with transcription
+vrecord stop        # Will transcribe if started with -t
+vrecord stop -t     # Or, you can decide to transcribe when stopping
+vrecord -n start -t # No MP3 conversion but transcribe enabled (won't transcribe without MP3. So don't do that.)
 
 # Show version
 vrecord -V
@@ -197,12 +198,12 @@ vrecord -V
 ## Command Reference
 
 ### Global Options
-- `-n, --no-mp3` - Skip MP3 conversion when stopping
-- `-b, --no-beep` - Disable beep notifications for this session
-- `-q, --quiet` - Suppress output except errors
-- `-v, --verbose` - Increase verbosity
-- `-h, --help` - Show help message
-- `-V, --version` - Display version information
+- `-n, --no-mp3`   Skip MP3 conversion when stopping
+- `-b, --no-beep`  Disable beep notifications for this session
+- `-q, --quiet`    Suppress output except errors
+- `-v, --verbose`  Increase verbosity
+- `-h, --help`     Show help message
+- `-V, --version`  Display version information
 
 ### Commands
 
