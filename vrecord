@@ -1,0 +1,1183 @@
+#!/bin/bash
+# vrecord - Voice Recorder with Resume Capability
+# Copyright (C) 2024 Generated with Claude Code
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# Description:
+# A robust voice recording script that supports pause/resume functionality,
+# automatic MP3 conversion, and the ability to continue previous recordings.
+#
+# Features:
+#   - Record audio from default PulseAudio input device
+#   - Pause and resume recordings in progress
+#   - Continue/append to existing recordings
+#   - Automatic MP3 conversion with optional bypass
+#   - Persistent state across script invocations
+#   - Lock file mechanism to prevent concurrent instances
+#
+# Usage: vrecord [global-options] <command> [command-options]
+#
+# Dependencies: ffmpeg (with PulseAudio support), PulseAudio
+# Optional: mediainfo (for detailed file information)
+#
+# Author: Generated with Claude Code
+# License: GPL-3.0-or-later
+#
+#shellcheck disable=SC2155
+set -euo pipefail
+
+# Script name and path detection
+#shellcheck disable=SC2034
+PRG0=$(readlink -en -- "$0")  # Full path to script
+PRG=$(basename -- "$PRG0")     # Script basename
+readonly PRG0 PRG
+
+# Version information
+readonly VERSION="1.0.0"
+
+# ============================================================================
+# LOGGING AND UTILITY FUNCTIONS
+# ============================================================================
+#shellcheck disable=SC2015
+declare -- RED='' YELLOW='' GREEN='' NOCOLOR=''
+[[ -t 2 ]] && declare -r RED=$'\033[0;31m' YELLOW=$'\033[0;33m' GREEN=$'\033[0;32m' NOCOLOR=$'\033[0m'
+readonly RED YELLOW GREEN NOCOLOR
+# Verbosity control: 0=quiet, 1=normal, 2+=verbose
+declare -i VERBOSE=1 DEBUG=0
+vecho() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do printf '%s: %s\n' "$PRG" "$msg"; done; }
+info() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %s\n' "$PRG" "$msg"; done; }
+warn() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %swarn%s: %s\n' "$PRG" "$YELLOW" "$NOCOLOR" "$msg"; done; }
+error() { local -- msg; for msg in "$@"; do >&2 printf '%s: %serror%s: %s\n' "$PRG" "$RED" "$NOCOLOR" "$msg"; done; }
+success() { local -- msg; for msg in "$@"; do >&2 printf '%s: %ssuccess%s: %s\n' "$PRG" "$GREEN" "$NOCOLOR" "$msg"; done; }
+debug() { ((DEBUG)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %sdebug%s: %s\n' "$PRG" "$YELLOW" "$NOCOLOR" "$msg"; done; }
+die() { (($# < 2)) || info "${@:2}"; (($# < 1)) || exit "$1"; exit 1; }
+decp() { ((DEBUG)) || return 0; >&2 declare -p "$@"; }
+trim() { local -- v="$*"; v="${v#"${v%%[![:blank:]]*}"}"; echo -n "${v%"${v##*[![:blank:]]}"}"; }
+
+# ============================================================================
+# GLOBAL VARIABLES AND CONFIGURATION
+# ============================================================================
+# Configuration variables with defaults
+declare -- RECORDING_DIR="${RECORDING_DIR:-$HOME/Recordings}"
+declare -- STATE_DIR="${STATE_DIR:-$HOME/.vrecord}"
+declare -- DEFAULT_PREFIX="${DEFAULT_PREFIX:-voice_recording}"
+declare -- MP3_BITRATE="${MP3_BITRATE:-192k}"
+declare -- AUDIO_FORMAT="${AUDIO_FORMAT:-pcm_s16le}"
+declare -i SAMPLE_RATE="${SAMPLE_RATE:-44100}"
+declare -i CHANNELS="${CHANNELS:-2}"
+declare -i MIN_DISK_SPACE_MB="${MIN_DISK_SPACE_MB:-100}"
+declare -i LOG_MAX_SIZE_MB="${LOG_MAX_SIZE_MB:-10}"
+declare -i LOG_MAX_FILES="${LOG_MAX_FILES:-5}"
+
+# Beep notification settings
+declare -i BEEP_ENABLED="${BEEP_ENABLED:-1}"  # Enable beep notifications
+declare -i BEEP_INTERVAL="${BEEP_INTERVAL:-60}"  # Seconds between beeps
+declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"  # Path to beep sound
+
+# Directory paths
+declare -- TEMP_DIR=""
+# State file paths (initialized in init_temp_dir)
+declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE
+# Configuration flags
+declare -i NO_MP3=0  # Skip MP3 conversion if 1
+declare -i NO_BEEP=0  # Skip beep notifications if 1
+declare -i TRANSCRIBE=0  # Transcribe after recording if 1
+
+# Load configuration files
+load_config() {
+  local -- config_file="$1"
+  if [[ -f "$config_file" ]]; then
+    debug "Loading config from: $config_file"
+    # Source config file in a subshell to validate it first
+    if (source "$config_file" 2>/dev/null); then
+      source "$config_file"
+    else
+      warn "Invalid config file: $config_file"
+    fi
+  fi
+}
+
+# Load system and user configs
+load_config "/etc/vrecord/config"
+load_config "$STATE_DIR/config"
+
+# Re-apply environment variable overrides after config loading
+RECORDING_DIR="${VRECORD_RECORDING_DIR:-$RECORDING_DIR}"
+STATE_DIR="${VRECORD_STATE_DIR:-$STATE_DIR}"
+DEFAULT_PREFIX="${VRECORD_DEFAULT_PREFIX:-$DEFAULT_PREFIX}"
+MP3_BITRATE="${VRECORD_MP3_BITRATE:-$MP3_BITRATE}"
+
+# Set derived variables
+LOCK_FILE="$STATE_DIR/vrecord.lock"
+
+# Create directories if they don't exist
+mkdir -p "$RECORDING_DIR" "$STATE_DIR"
+
+# ============================================================================
+# DEPENDENCY AND ENVIRONMENT CHECKS
+# ============================================================================
+# check_dependencies: Verify required tools are installed
+check_dependencies() {
+  local -i missing=0
+  
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    error "ffmpeg is not installed!"
+    ((missing+=1))
+  elif ! ffmpeg -hide_banner -devices 2>&1 | grep -q "pulse"; then
+    error "ffmpeg does not have PulseAudio support!"
+    ((missing+=1))
+  fi
+  
+  if ! command -v pactl >/dev/null 2>&1; then
+    error "PulseAudio is not installed!"
+    ((missing+=1))
+  fi
+  
+  ((missing == 0)) || die 1 "Missing dependencies. Please install required software."
+}
+
+# ============================================================================
+# LOCK FILE MANAGEMENT
+# ============================================================================
+# acquire_lock: Obtain exclusive lock to prevent concurrent instances
+acquire_lock() {
+  local -i timeout=5
+  local -i elapsed=0
+  
+  while [[ -f "$LOCK_FILE" ]] && ((elapsed < timeout)); do
+    local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "unknown")
+    if [[ "$lock_pid" != "unknown" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+      warn "Removing stale lock file"
+      rm -f "$LOCK_FILE"
+      break
+    fi
+    sleep 0.5
+    ((elapsed+=1))
+  done
+  
+  if [[ -f "$LOCK_FILE" ]]; then
+    error "Another instance is running (PID: $(cat "$LOCK_FILE" 2>/dev/null || echo "unknown"))"
+    return 1
+  fi
+  
+  echo $$ > "$LOCK_FILE"
+}
+
+release_lock() {
+  [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$$" ]] && rm -f "$LOCK_FILE"
+}
+
+# ============================================================================
+# CLEANUP AND SIGNAL HANDLING
+# ============================================================================
+# cleanup_on_exit: Clean up temporary files and release lock on exit
+cleanup_on_exit() {
+  local -- exit_code=$?
+  
+  # If we have an active recording PID, try to save it gracefully
+  if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR/ffmpeg.pid" ]]; then
+    local -- pid=$(cat "$TEMP_DIR/ffmpeg.pid" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      warn "Script interrupted, recording continues in background"
+      warn "Use '$PRG stop' to stop recording"
+    fi
+  fi
+  
+  release_lock
+  
+  # Only clean up temp dir if no active recording
+  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]] && [[ ! -f "$TEMP_DIR/ffmpeg.pid" ]]; then
+    rm -rf "$TEMP_DIR"
+  fi
+  
+  exit $exit_code
+}
+
+# Signal handlers
+handle_signal() {
+  local -- signal=$1
+  warn "Received signal $signal"
+  cleanup_on_exit
+}
+
+# Set up traps
+trap cleanup_on_exit EXIT
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+
+# ============================================================================
+# STATE MANAGEMENT FUNCTIONS
+# ============================================================================
+# get_recording_dir: Retrieve the temporary directory for current recording
+get_recording_dir() {
+  local -- current_recording="$STATE_DIR/current_recording"
+  if [[ -f "$current_recording" ]]; then
+    cat "$current_recording"
+  else
+    echo ""
+  fi
+}
+
+# Function to set current recording temp dir
+set_recording_dir() {
+  local -- dir="$1"
+  echo "$dir" > "$STATE_DIR/current_recording"
+}
+
+# Function to clear current recording
+clear_recording_dir() {
+  rm -f "$STATE_DIR/current_recording"
+}
+
+# init_temp_dir: Initialize or retrieve temporary directory for recording
+init_temp_dir() {
+  TEMP_DIR=$(get_recording_dir)
+  if [[ -z "$TEMP_DIR" || ! -d "$TEMP_DIR" ]]; then
+    TEMP_DIR=$(mktemp -d /tmp/"$PRG".XXXXXX)
+    set_recording_dir "$TEMP_DIR"
+  fi
+  
+  PID_FILE="$TEMP_DIR"/ffmpeg.pid
+  STATE_FILE="$TEMP_DIR"/state
+  SEGMENT_COUNT_FILE="$TEMP_DIR"/segment_count
+  SEGMENTS_DIR="$TEMP_DIR"/segments
+  BEEP_PID_FILE="$TEMP_DIR"/beep.pid
+  TRANSCRIBE_FILE="$TEMP_DIR"/transcribe
+  
+  mkdir -p "$SEGMENTS_DIR"
+}
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+# check_disk_space: Verify sufficient disk space for recording
+check_disk_space() {
+  local -- path="$1"
+  local -i required_mb="${2:-$MIN_DISK_SPACE_MB}"  # Use configured minimum
+  
+  local -i available_mb=$(df -BM "$path" | awk 'NR==2 {print $4}' | sed 's/M//')
+  
+  if ((available_mb < required_mb)); then
+    error "Insufficient disk space: ${available_mb}MB available, ${required_mb}MB required"
+    return 1
+  fi
+  
+  return 0
+}
+
+# Function to get timestamp for filename
+get_timestamp() { date +"%Y%m%d_%H%M%S"; }
+
+# list_recordings: Display WAV files or all files in recordings directory
+list_recordings() {
+  local -i show_all="${1:-0}"
+  
+  if ((show_all)); then
+    printf '%s\n' "All files in $RECORDING_DIR:"
+  else
+    printf '%s\n' "Available recordings in $RECORDING_DIR:"
+  fi
+  printf '%s\n' '----------------------------------------'
+  
+  local -i count=1
+  local -i found=0
+  local -- file basename size date ext
+  
+  if ((show_all)); then
+    # Show all files
+    for file in "$RECORDING_DIR"/*; do
+      if [[ -f "$file" ]]; then
+        found=1
+        basename=$(basename "$file")
+        size=$(du -h "$file" | cut -f1)
+        date=$(stat -c %y "$file" | cut -d' ' -f1,2 | cut -d'.' -f1)
+        ext="${basename##*.}"
+        printf "%2d. %-40s [%s] %-8s %s\n" "$count" "$basename" "$size" "[$ext]" "$date"
+        ((count+=1))
+      fi
+    done
+  else
+    # Show only WAV files
+    if ls "$RECORDING_DIR"/*.wav >/dev/null 2>&1; then
+      found=1
+      for file in "$RECORDING_DIR"/*.wav; do
+        basename=$(basename "$file")
+        size=$(du -h "$file" | cut -f1)
+        date=$(stat -c %y "$file" | cut -d' ' -f1,2 | cut -d'.' -f1)
+        printf "%2d. %-40s [%s] %s\n" "$count" "$basename" "$size" "$date"
+        ((count+=1))
+      done
+    fi
+  fi
+  
+  if ((found == 0)); then
+    if ((show_all)); then
+      printf '%s\n' 'No files found.'
+    else
+      printf '%s\n' 'No recordings found.'
+    fi
+  fi
+  echo
+}
+
+# validate_ffmpeg_process: Check if PID is a running ffmpeg process
+validate_ffmpeg_process() {
+  local -- pid="$1"
+  
+  # Check if process exists
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  
+  # Check if it's actually ffmpeg
+  local -- cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
+  if [[ "$cmd" != "ffmpeg" ]]; then
+    return 1
+  fi
+  
+  return 0
+}
+
+# get_last_recording: Find the most recently modified WAV file
+get_last_recording() {
+  local -- last_file
+  # Using find instead of ls for better handling of special characters in filenames
+  last_file=$(find "$RECORDING_DIR" -maxdepth 1 -name "*.wav" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
+  if [[ -n "$last_file" && -f "$last_file" ]]; then
+    echo "$last_file"
+  else
+    echo ""
+  fi
+}
+
+# ============================================================================
+# LOG MANAGEMENT FUNCTIONS
+# ============================================================================
+# rotate_log: Rotate log file if it exceeds size limit
+rotate_log() {
+  local -- log_file="$1"
+  local -i max_size_bytes=$((LOG_MAX_SIZE_MB * 1024 * 1024))
+  
+  # Check if log file exists and size
+  if [[ ! -f "$log_file" ]]; then
+    return 0
+  fi
+  
+  local -i file_size=$(stat -c%s "$log_file" 2>/dev/null || echo 0)
+  
+  if ((file_size >= max_size_bytes)); then
+    debug "Rotating log file: $log_file (size: $file_size bytes)"
+    
+    # Rotate existing numbered logs
+    local -i i
+    for ((i=LOG_MAX_FILES-1; i>=1; i-=1)); do
+      if [[ -f "$log_file.$i.gz" ]]; then
+        if ((i >= LOG_MAX_FILES-1)); then
+          rm -f "$log_file.$i.gz"
+        else
+          mv "$log_file.$i.gz" "$log_file.$((i+1)).gz"
+        fi
+      fi
+    done
+    
+    # Compress and rotate current log
+    if command -v gzip >/dev/null 2>&1; then
+      gzip -c "$log_file" > "$log_file.1.gz" && > "$log_file"
+    else
+      mv "$log_file" "$log_file.1" && > "$log_file"
+    fi
+  fi
+}
+
+# clean_old_logs: Remove old log files from state directory
+clean_old_logs() {
+  # Skip if STATE_DIR doesn't exist
+  [[ -d "$STATE_DIR" ]] || return 0
+  
+  local -- log_dir="$STATE_DIR/logs"
+  
+  if [[ -d "$log_dir" ]]; then
+    # Find and remove log files older than 30 days
+    find "$log_dir" -name "*.log*" -type f -mtime +30 -delete 2>/dev/null || true
+  fi
+  
+  # Clean up old temporary directories
+  find "$STATE_DIR" -name "vrecord.*" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+}
+
+# check_log_before_write: Check and rotate log before writing
+check_log_before_write() {
+  local -- log_file="$1"
+  
+  # Create log directory if needed
+  local -- log_dir=$(dirname "$log_file")
+  [[ -d "$log_dir" ]] || mkdir -p "$log_dir"
+  
+  # Rotate if needed
+  rotate_log "$log_file"
+}
+
+# ============================================================================
+# BEEP NOTIFICATION FUNCTIONS
+# ============================================================================
+# beep_loop: Background process that plays beeps while recording
+beep_loop() {
+  # Check if beep is enabled
+  ((BEEP_ENABLED == 0 || NO_BEEP == 1)) && return 0
+  
+  # Check if beep file exists
+  if [[ ! -f "$BEEP_FILE" ]]; then
+    # Try the local beep.mp3 in the script directory
+    local -- script_dir=$(dirname "$PRG0")
+    if [[ -f "$script_dir/beep.mp3" ]]; then
+      BEEP_FILE="$script_dir/beep.mp3"
+    else
+      debug "Beep file not found: $BEEP_FILE"
+      return 0
+    fi
+  fi
+  
+  # Check if ffplay is available
+  if ! command -v ffplay >/dev/null 2>&1; then
+    debug "ffplay not found, beep notifications disabled"
+    return 0
+  fi
+  
+  # Main beep loop
+  while true; do
+    # Check if we should continue (recording state)
+    if [[ -f "$STATE_FILE" ]]; then
+      local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+      if [[ "$state" != "recording" ]]; then
+        # Not recording, wait and check again
+        sleep 5
+        continue
+      fi
+    else
+      # No state file, exit
+      break
+    fi
+    
+    # Play the beep
+    ffplay -nodisp -autoexit -loglevel quiet "$BEEP_FILE" >/dev/null 2>&1 || true
+    
+    # Sleep for the interval
+    sleep "$BEEP_INTERVAL"
+  done
+}
+
+# start_beep_process: Start the beep notification background process
+start_beep_process() {
+  # Check if beep is enabled
+  ((BEEP_ENABLED == 0 || NO_BEEP == 1)) && return 0
+  
+  # Check if already running
+  if [[ -f "$BEEP_PID_FILE" ]]; then
+    local -- pid=$(cat "$BEEP_PID_FILE" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      debug "Beep process already running: $pid"
+      return 0
+    fi
+  fi
+  
+  # Start beep loop in background
+  beep_loop &
+  local -- beep_pid=$!
+  echo "$beep_pid" > "$BEEP_PID_FILE"
+  debug "Started beep process: $beep_pid"
+}
+
+# stop_beep_process: Stop the beep notification background process
+stop_beep_process() {
+  if [[ -f "$BEEP_PID_FILE" ]]; then
+    local -- pid=$(cat "$BEEP_PID_FILE" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      debug "Stopped beep process: $pid"
+    fi
+    rm -f "$BEEP_PID_FILE"
+  fi
+}
+
+# ============================================================================
+# RECORDING CONTROL FUNCTIONS
+# ============================================================================
+# start_recording: Start a new recording or resume an existing one
+start_recording() {
+  local -- filename_prefix="${1:-$DEFAULT_PREFIX}"
+  local -- resume_file="${2:-}"
+  local -i continue_last="${3:-0}"
+  
+  check_dependencies
+  acquire_lock || return 1
+  init_temp_dir
+  
+  local -- output_file=''
+
+  # Check disk space
+  check_disk_space "$RECORDING_DIR" 100 || return 1
+
+  # Check if directory is writable
+  if ! touch "$RECORDING_DIR/.test" 2>/dev/null; then
+    error "Recording directory is not writable: $RECORDING_DIR"
+    return 1
+  fi
+  rm -f "$RECORDING_DIR/.test"
+
+  # Handle continue-last flag
+  if ((continue_last)); then
+    resume_file=$(get_last_recording)
+    if [[ -z "$resume_file" ]]; then
+      error "No recordings found to continue!"
+      return 1
+    fi
+    info "Continuing last recording: $(basename "$resume_file")"
+  fi
+  
+  # Check if we're resuming an existing file
+  if [[ -n "$resume_file" ]]; then
+    if [[ -f "$resume_file" ]]; then
+      # File exists, good to go
+      true
+    elif [[ -f "$RECORDING_DIR/$resume_file" ]]; then
+      resume_file="$RECORDING_DIR/$resume_file"
+    else
+      error "File '$resume_file' not found!" \
+            "Use 'list' command to see available recordings."
+      return 1
+    fi
+  fi
+
+  if [[ -f "$PID_FILE" ]]; then
+    local -- pid=$(cat "$PID_FILE")
+    if validate_ffmpeg_process "$pid"; then
+      error 'Recording is already in progress!'
+      return 1
+    else
+      warn "Found stale PID file, cleaning up..."
+      rm -f "$PID_FILE"
+    fi
+  fi
+
+  if [[ -n "$resume_file" ]]; then
+    # Resuming existing recording
+    output_file="$resume_file"
+    info "Resuming recording: $(basename "$output_file")" \
+         "Original file size: $(du -h "$output_file" | cut -f1)"
+
+    # Store the main file path for later merging
+    echo "$output_file" > "$TEMP_DIR"/main_file
+
+    # Get or initialize segment count
+    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+    ((segment_count+=1))
+    local segment_file="$SEGMENTS_DIR/segment_${segment_count}.wav"
+
+    info "Recording new segment: $segment_file"
+
+    # Start recording the new segment
+    local -- log_file="$TEMP_DIR/ffmpeg.log"
+    check_log_before_write "$log_file"
+    ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$segment_file" \
+           </dev/null >/dev/null 2>>"$log_file" &
+
+    echo "$segment_count" > "$SEGMENT_COUNT_FILE"
+    echo "$segment_file" > "$TEMP_DIR/current_file"
+    
+    # Save transcribe flag if set
+    if ((TRANSCRIBE == 1)); then
+      echo "1" > "$TRANSCRIBE_FILE"
+    fi
+
+  else
+    # New recording
+    local -- timestamp=$(get_timestamp)
+    # Clean up prefix: remove trailing underscore to avoid double underscores
+    filename_prefix="${filename_prefix%_}"
+    output_file="$RECORDING_DIR/${filename_prefix}_$timestamp.wav"
+    info 'Starting new recording...' \
+         "Output file: $output_file"
+
+    # Start ffmpeg for new recording
+    local -- log_file="$TEMP_DIR/ffmpeg.log"
+    check_log_before_write "$log_file"
+    ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$output_file" \
+           </dev/null >/dev/null 2>>"$log_file" &
+
+    echo "0" > "$SEGMENT_COUNT_FILE"
+    echo "$output_file" > "$TEMP_DIR"/main_file
+    echo "$output_file" > "$TEMP_DIR"/current_file
+    [[ -d "$SEGMENTS_DIR" ]] && rm -rf "${SEGMENTS_DIR:?}"/*
+    
+    # Save transcribe flag if set
+    if ((TRANSCRIBE == 1)); then
+      echo "1" > "$TRANSCRIBE_FILE"
+    fi
+  fi
+
+  # Save the PID and verify process started
+  local -- new_pid=$!
+  echo "$new_pid" > "$PID_FILE"
+  
+  # Verify ffmpeg started successfully
+  # Small delay allows ffmpeg to initialize or fail fast
+  sleep 0.5
+  if ! validate_ffmpeg_process "$new_pid"; then
+    error "Failed to start recording! Check $TEMP_DIR/ffmpeg.log for details"
+    rm -f "$PID_FILE"
+    return 1
+  fi
+  
+  echo 'recording' > "$STATE_FILE"
+
+  info "Recording started. PID: $new_pid" \
+       "Use '$PRG stop' to stop recording"
+  
+  # Start beep notifications
+  start_beep_process
+       
+  release_lock
+}
+
+# pause_recording: Pause an active recording using SIGSTOP
+pause_recording() {
+  acquire_lock || return 1
+  init_temp_dir
+  
+  [[ -f "$PID_FILE" ]] || { error 'No active recording found!'; release_lock; return 1; }
+
+  local -- pid=$(cat "$PID_FILE")
+  local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+
+  if [[ "$state" == paused ]]; then
+    error 'Recording is already paused!'
+    release_lock
+    return 1
+  fi
+
+  if validate_ffmpeg_process "$pid"; then
+    info 'Pausing recording...'
+    kill -STOP "$pid"
+    echo 'paused' > "$STATE_FILE"
+    
+    # Stop beep notifications while paused
+    stop_beep_process
+    
+    info "Recording paused. Use 'resume' to continue."
+  else
+    error 'Recording process not found!'
+    cleanup_files
+  fi
+  
+  release_lock
+}
+
+# resume_recording: Resume a paused recording using SIGCONT
+resume_recording() {
+  acquire_lock || return 1
+  init_temp_dir
+  
+  if [[ ! -f "$PID_FILE" ]]; then
+    error 'No active recording found!'
+    release_lock
+    return 1
+  fi
+
+  local -- pid=$(cat "$PID_FILE")
+  local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
+
+  if [[ "$state" == recording ]]; then
+    error 'Recording is already active!'
+    release_lock
+    return 1
+  fi
+
+  if validate_ffmpeg_process "$pid"; then
+    info 'Resuming recording...'
+    kill -CONT "$pid"
+    echo 'recording' > "$STATE_FILE"
+    
+    # Restart beep notifications
+    start_beep_process
+    
+    info 'Recording resumed.'
+  else
+    error 'Recording process not found!'
+    cleanup_files
+  fi
+  
+  release_lock
+}
+
+# merge_segments: Concatenate recorded segments with the original file
+merge_segments() {
+  local main_file="$1"
+  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+  
+  ((segment_count == 0)) && return 0  # No segments to merge
+
+  info 'Merging segments with original recording...'
+
+  # Create concat demuxer input file for ffmpeg
+  # Format: each line contains "file '/path/to/file.wav'"
+  local -- filelist="$TEMP_DIR/filelist.txt"
+  echo "file '$main_file'" > "$filelist"
+
+  # Add all segments to the list
+  local -i i
+  local -- segment_file
+  for ((i=1; i<=segment_count; i+=1)); do
+    segment_file="$SEGMENTS_DIR/segment_${i}.wav"
+    if [[ -f "$segment_file" ]]; then
+      echo "file '$segment_file'" >> "$filelist"
+    fi
+  done
+
+  # Create merged file
+  local -- temp_merged="$TEMP_DIR"/merged_$(basename "$main_file")
+
+  local -- log_file="$TEMP_DIR/merge.log"
+  check_log_before_write "$log_file"
+  if ffmpeg -f concat -safe 0 -i "$filelist" -c copy "$temp_merged" -y \
+            </dev/null >/dev/null 2>>"$log_file"; then
+    # Replace original with merged version
+    mv "$temp_merged" "$main_file"
+    info "Successfully merged segments into: $main_file"
+
+    # Clean up segment files
+    rm -f "$SEGMENTS_DIR"/segment_*.wav
+    rm -f "$filelist"
+  else
+    error 'Error: Failed to merge segments!' \
+          "Original file preserved: $main_file" \
+          "Segments preserved in: $SEGMENTS_DIR" \
+          "Check $TEMP_DIR/merge.log for details"
+    return 1
+  fi
+}
+
+# stop_recording: Stop recording, merge segments, and optionally convert to MP3
+stop_recording() {
+  acquire_lock || return 1
+  init_temp_dir
+  
+  if [[ ! -f "$PID_FILE" ]]; then
+    error 'No active recording found!'
+    release_lock
+    return 1
+  fi
+
+  local -- pid=$(cat "$PID_FILE")
+  local -- main_file=$(cat "$TEMP_DIR/main_file" 2>/dev/null)
+  local -- current_file=$(cat "$TEMP_DIR/current_file" 2>/dev/null)
+  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+
+  if validate_ffmpeg_process "$pid"; then
+    info 'Stopping recording...'
+    
+    # Stop beep notifications
+    stop_beep_process
+
+    # Resume if paused before stopping
+    # This ensures we get a clean shutdown of the recording
+    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+    if [[ "$state" == "paused" ]]; then
+      kill -CONT "$pid" 2>/dev/null
+      sleep 0.5  # Allow process to resume
+    fi
+
+    # Send SIGTERM to ffmpeg for clean shutdown
+    kill -TERM "$pid" 2>/dev/null
+
+    # Wait for process to finish with timeout
+    local -i wait_count=0
+    while kill -0 "$pid" 2>/dev/null && ((wait_count < 20)); do
+      sleep 0.5
+      ((wait_count+=1))
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+      warn "Process didn't stop cleanly, forcing..."
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+
+    info 'Recording stopped.'
+
+    # If we have segments, merge them
+    if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
+      merge_segments "$main_file"
+    fi
+
+    if [[ -n "$main_file" && -f "$main_file" ]]; then
+      info "Recording saved to: $main_file"
+
+      # Show file info
+      if command -v mediainfo >/dev/null 2>&1; then
+        info 'File info:'
+        mediainfo "$main_file" 2>/dev/null | grep -E "(Duration|File size)" >&2 || true
+      else
+        info "File size: $(du -h "$main_file" | cut -f1)"
+      fi
+      
+      # Convert to MP3 unless --no-mp3 was specified
+      if ((NO_MP3 == 0)) && [[ -n "$main_file" && -f "$main_file" ]]; then
+        convert_to_mp3 "$main_file"
+      fi
+    fi
+  else
+    error 'Recording process not found!'
+  fi
+
+  cleanup_files
+  release_lock
+}
+
+# convert_to_mp3: Convert WAV recording to MP3 format
+convert_to_mp3() {
+  local -- wav_file="$1"
+  local -- mp3_file="${wav_file%.wav}.mp3"
+  
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    warn "ffmpeg not found, skipping MP3 conversion"
+    return 1
+  fi
+  
+  info "Converting to MP3: $(basename "$mp3_file")"
+  
+  local -- log_file="$TEMP_DIR/mp3_convert.log"
+  check_log_before_write "$log_file"
+  if ffmpeg -y -i "$wav_file" -codec:a libmp3lame -b:a "$MP3_BITRATE" "$mp3_file" \
+            </dev/null >/dev/null 2>>"$log_file"; then
+    # Wait a moment for file system to sync
+    sync
+    success "MP3 created: $mp3_file"
+    info "MP3 size: $(du -h "$mp3_file" | cut -f1)"
+    
+    # Run transcription if requested and transcribe command is available
+    if [[ -f "$TRANSCRIBE_FILE" ]] || ((TRANSCRIBE == 1)); then
+      if command -v transcribe >/dev/null 2>&1; then
+        info "Running transcription on: $(basename "$mp3_file")"
+        if transcribe "$mp3_file"; then
+          success "Transcription completed"
+        else
+          warn "Transcription failed"
+        fi
+      else
+        warn "Transcribe command not found, skipping transcription"
+      fi
+    fi
+  else
+    error "Failed to convert to MP3" \
+          "Check $TEMP_DIR/mp3_convert.log for details"
+    return 1
+  fi
+}
+
+# show_status: Display current recording status and statistics
+show_status() {
+  init_temp_dir
+  
+  if [[ -f "$PID_FILE" ]]; then
+    local -- pid=$(cat "$PID_FILE")
+    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+    local -- main_file=$(cat "$TEMP_DIR/main_file" 2>/dev/null)
+    local -- current_file=$(cat "$TEMP_DIR/current_file" 2>/dev/null)
+    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+
+    if validate_ffmpeg_process "$pid"; then
+      info "Recording Status: $state" \
+           "PID: $pid" \
+           "Main file: $main_file"
+      if ((segment_count > 0)); then
+        info "Resume segments: $segment_count" \
+             "Original file size: $(du -h "$main_file" 2>/dev/null | cut -f1 || echo "Unknown")"
+        if [[ -f "$current_file" ]]; then
+          info "Current segment size: $(du -h "$current_file" 2>/dev/null | cut -f1 || echo "Unknown")"
+        fi
+      else
+        if [[ -f "$current_file" ]]; then
+          info "Current file size: $(du -h "$current_file" 2>/dev/null | cut -f1 || echo "Unknown")"
+        fi
+      fi
+      
+      # Check for errors in log
+      if [[ -f "$TEMP_DIR/ffmpeg.log" ]] && [[ -s "$TEMP_DIR/ffmpeg.log" ]]; then
+        local -- last_error=$(tail -n 5 "$TEMP_DIR/ffmpeg.log" 2>/dev/null | grep -i error | tail -n 1)
+        [[ -n "$last_error" ]] && warn "Recent error: $last_error"
+      fi
+    else
+      error 'No active recording (stale PID file found)'
+      cleanup_files
+    fi
+  else
+    error 'No active recording'
+  fi
+}
+
+# cleanup_files: Remove all temporary files and clear state
+cleanup_files() {
+  # Stop beep process if running
+  stop_beep_process
+  
+  rm -f "$PID_FILE" "$STATE_FILE" "$SEGMENT_COUNT_FILE" "$BEEP_PID_FILE" "$TRANSCRIBE_FILE"
+  rm -f "$TEMP_DIR"/current_file "$TEMP_DIR"/main_file
+  rm -f "$TEMP_DIR"/filelist.txt "$TEMP_DIR"/*.log
+  clear_recording_dir
+  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
+    rm -rf "$TEMP_DIR"
+  fi
+}
+
+# show_help: Display usage information and exit
+show_help() {
+  cat <<EOT
+Voice Recorder with Resume Capability
+
+Usage: $PRG [global-options] <command> [command-options]
+
+Global Options (can appear anywhere):
+  -n, --no-mp3     Skip MP3 conversion when stopping recording
+  -b, --no-beep    Disable beep notifications for this session
+  -v, --verbose    Increase verbosity (can be used multiple times)
+  -q, --quiet      Suppress all output except errors
+  -h, --help       Show this help message
+  -V, --version    Display version information and exit
+
+Commands:
+  start [prefix]           Start new recording with optional filename prefix
+  start -c                 Continue the most recent recording
+  start -r FILE            Resume specific recording file
+  start -t                 Enable transcription after MP3 creation
+  pause                    Pause current recording
+  resume                   Resume paused recording  
+  stop                     Stop recording and save file
+  stop -t                  Stop and enable transcription after MP3 creation
+  status                   Show current recording status
+  list                     List existing recordings (WAV files only)
+  list --all               List all files in recordings directory
+  help                     Show this help message
+
+Examples:
+  $PRG start                      # Start new recording with default prefix
+  $PRG start meeting              # Start new recording as meeting_TIMESTAMP.wav
+  $PRG -n start interview         # Start recording without MP3 conversion
+  $PRG start -c                   # Continue the most recent recording
+  $PRG start -t meeting           # Start recording with transcription enabled
+  $PRG stop --no-mp3              # Stop recording without MP3 conversion
+  $PRG stop -t                    # Stop and transcribe the MP3 file
+  $PRG -q start -r voice.wav      # Resume recording quietly
+  $PRG list --all                 # Show all files in recordings directory
+
+Recordings are saved to: $RECORDING_DIR
+State files are saved to: $STATE_DIR
+
+Note: Recording continues even if you exit this script.
+      Use '$PRG status' to check and '$PRG stop' to end recording.
+
+EOT
+  exit 0
+}
+
+
+# ============================================================================
+# COMMAND-LINE PARSING
+# ============================================================================
+# parse_args: Parse global options and extract command
+parse_args() {
+  local -a args=()
+  local -- command=""
+  
+  # First pass: extract global options and command
+  # Global options can appear anywhere in the command line
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n|--no-mp3)
+        NO_MP3=1
+        shift
+        ;;
+      -b|--no-beep)
+        NO_BEEP=1
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=$((VERBOSE + 1))
+        shift
+        ;;
+      -q|--quiet)
+        VERBOSE=0
+        shift
+        ;;
+      -h|--help|help)
+        show_help
+        ;;
+      -V|--version)
+        cat <<EOF
+$PRG version $VERSION
+Copyright (C) 2024 Generated with Claude Code
+License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+EOF
+        exit 0
+        ;;
+      -*)
+        # Unknown option - save for command processing
+        args+=("$1")
+        shift
+        ;;
+      *)
+        # This is the command or a command argument
+        if [[ -z "$command" ]]; then
+          command="$1"
+        else
+          args+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  # If no command given, show help
+  [[ -z "$command" ]] && show_help
+  
+  # Process the command with remaining arguments
+  process_command "$command" "${args[@]}"
+}
+
+# process_command: Execute the requested command with its arguments
+process_command() {
+  local -- command="$1"
+  shift
+  
+  case "$command" in
+    start)
+      local -- prefix=""
+      local -- resume_file=""
+      local -i continue_last=0
+      
+      # Parse start command options
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -c|--continue-last)
+            continue_last=1
+            shift
+            ;;
+          -r|--resume)
+            if [[ -z "${2:-}" ]]; then
+              die 2 "--resume requires a filename"
+            fi
+            resume_file="$2"
+            shift 2
+            ;;
+          -t|--transcribe)
+            TRANSCRIBE=1
+            shift
+            ;;
+          -*)
+            die 2 "Unknown option for start: '$1'"
+            ;;
+          *)
+            # This is the prefix
+            if [[ -z "$prefix" ]]; then
+              prefix="$1"
+            else
+              die 2 "Too many arguments for start command"
+            fi
+            shift
+            ;;
+        esac
+      done
+      
+      # Validate conflicting options
+      if ((continue_last)) && [[ -n "$resume_file" ]]; then
+        die 2 "Cannot use both --continue-last and --resume"
+      fi
+      
+      # Validation: prefix not allowed with continue/resume
+      # When continuing/resuming, the filename is already determined
+      if [[ -n "$prefix" ]] && { ((continue_last)) || [[ -n "$resume_file" ]]; }; then
+        die 2 "Cannot specify filename prefix when continuing/resuming a recording"
+      fi
+      
+      start_recording "$prefix" "$resume_file" "$continue_last"
+      ;;
+    pause)
+      pause_recording
+      ;;
+    resume)
+      resume_recording
+      ;;
+    stop)
+      # Parse stop command options
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t|--transcribe)
+            TRANSCRIBE=1
+            shift
+            ;;
+          -*)
+            die 2 "Unknown option for stop: '$1'"
+            ;;
+          *)
+            die 2 "Unexpected argument for stop: '$1'"
+            ;;
+        esac
+      done
+      stop_recording
+      ;;
+    status)
+      show_status
+      ;;
+    list)
+      local -i show_all=0
+      
+      # Parse list options
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --all)
+            show_all=1
+            shift
+            ;;
+          -*)
+            die 2 "Unknown option for list: '$1'"
+            ;;
+          *)
+            die 2 "Unknown argument for list: '$1'"
+            ;;
+        esac
+      done
+      
+      list_recordings "$show_all"
+      ;;
+    *)
+      die 2 "Unknown command: '$command'. Use '$PRG help' for usage."
+      ;;
+  esac
+}
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+main() {
+  # Clean up old logs on startup
+  clean_old_logs
+  
+  # Parse arguments and execute command
+  parse_args "$@"
+}
+
+# Execute main function with all command-line arguments
+main "$@"
+#fin

@@ -1,0 +1,53 @@
+# vrecord configuration file
+# Copy this file to ~/.vrecord/config and customize as needed
+# 
+# Environment variables can override these settings:
+# - VRECORD_RECORDING_DIR
+# - VRECORD_STATE_DIR
+# - VRECORD_DEFAULT_PREFIX
+# - VRECORD_MP3_BITRATE
+
+# Directory where recordings are saved
+RECORDING_DIR="$HOME/Recordings"
+
+# Directory for state files and configuration
+STATE_DIR="$HOME/.vrecord"
+
+# Default filename prefix when none specified
+DEFAULT_PREFIX="voice_recording"
+
+# MP3 encoding bitrate (e.g., 128k, 192k, 256k, 320k)
+MP3_BITRATE="192k"
+
+# Audio format for recording (see ffmpeg -codecs for options)
+# Common values: pcm_s16le (16-bit), pcm_s24le (24-bit), pcm_s32le (32-bit)
+AUDIO_FORMAT="pcm_s16le"
+
+# Sample rate in Hz (common values: 44100, 48000, 96000)
+SAMPLE_RATE=44100
+
+# Number of channels (1=mono, 2=stereo)
+CHANNELS=2
+
+# Minimum free disk space required (in MB)
+MIN_DISK_SPACE_MB=100
+
+# Log file management
+LOG_MAX_SIZE_MB=10    # Maximum size of a single log file
+LOG_MAX_FILES=5       # Number of old log files to keep
+
+# Beep notification settings
+BEEP_ENABLED=1        # Enable beep notifications (0=disabled, 1=enabled)
+BEEP_INTERVAL=60      # Seconds between beeps during recording
+BEEP_FILE="$STATE_DIR/beep.mp3"  # Path to beep sound file
+
+# Example: High quality recording settings
+# AUDIO_FORMAT="pcm_s24le"
+# SAMPLE_RATE=48000
+# MP3_BITRATE="320k"
+
+# Example: Low bandwidth/storage settings
+# AUDIO_FORMAT="pcm_s16le"
+# SAMPLE_RATE=22050
+# CHANNELS=1
+# MP3_BITRATE="128k"
