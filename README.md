@@ -25,6 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 - **Simple command-line interface** with intuitive commands
 - **Background recording** - continues even if you close the terminal
 - **No data loss** - recordings are preserved even if interrupted
+- **Secure** - prevents command injection and ensures safe file handling
+- **Concurrent protection** - prevents multiple instances from interfering
 
 ## Quick Start
 
@@ -165,6 +167,8 @@ vrecord start -r voice_recording_20240115_143022.wav
 vrecord start -t podcast
 ```
 
+**Note**: Filename prefixes must contain only alphanumeric characters, dots, underscores, and hyphens for security reasons.
+
 ### Other Commands
 
 ```bash
@@ -288,8 +292,10 @@ See `config.sample` for all available options and examples.
 2. **Pause/Resume**: Sends SIGSTOP/SIGCONT signals to FFmpeg process
 3. **Continue**: Records new segments and merges them with the original file
 4. **State Persistence**: Maintains recording state across script invocations
-5. **Log Management**: Automatically rotates logs to prevent disk space issues
-6. **Beep Notifications**: Background process plays audio feedback during active recording
+5. **Lock Management**: Uses atomic file locking (flock) to prevent concurrent instances
+6. **Security**: Validates all user inputs to prevent command injection and path traversal
+7. **Log Management**: Automatically rotates logs to prevent disk space issues
+8. **Beep Notifications**: Background process plays audio feedback during active recording
 
 ## Tips
 
@@ -313,6 +319,22 @@ See `config.sample` for all available options and examples.
 ### Permission errors
 - Ensure `~/Recordings/` directory is writable
 - Check disk space: `df -h ~/Recordings`
+
+### "Another instance is running" error
+- Only one recording can be active at a time
+- Check status: `vrecord status`
+- If no recording is active but error persists, a stale lock may exist
+- The script will automatically clean stale locks on next run
+
+## Security
+
+vrecord implements several security measures:
+
+- **Input Validation**: All filenames and paths are validated to prevent command injection
+- **Path Restrictions**: Recording files are restricted to the configured recording directory
+- **Safe Characters**: Only alphanumeric characters, dots, underscores, and hyphens allowed in filenames
+- **Atomic Locking**: Uses kernel-level file locking to prevent race conditions
+- **No Shell Expansion**: User inputs are never passed directly to shell commands
 
 ## Requirements
 
