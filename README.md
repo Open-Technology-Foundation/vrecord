@@ -1,11 +1,11 @@
-# vrecord - Voice Recorder with Resume Capability
+# vrecord - Bash Voice Recorder, with Continue, Resume, Transcribe Capability
 
 A robust command-line voice recording tool for Linux that supports pause/resume functionality and automatic MP3 conversion.
 
 ## Quick Install
 
 ```bash
-# One-liner installation (will prompt for sudo password)
+# One-liner installation (uses sudo)
 curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/main/install.sh | bash
 
 # Or for user-only installation (no sudo required)
@@ -30,13 +30,13 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 
 ```bash
 # Start a new recording
-./vrecord start
+vrecord start
 
 # Stop recording and save
-./vrecord stop
+vrecord stop
 
-# Stop and transcribe (if transcribe tool is installed)
-./vrecord stop -t
+# Stop and transcribe (-t, if transcribe tool is installed)
+vrecord stop -t
 
 # Your recording is saved in ~/Recordings/
 ```
@@ -218,7 +218,7 @@ vrecord -V
 | `list` | List WAV recordings |
 | `list --all` | List all files in recordings directory |
 
-## File Locations
+## Default File Locations
 
 - **Recordings**: `~/Recordings/`
 - **State files**: `~/.vrecord/`
@@ -252,7 +252,7 @@ BEEP_INTERVAL=60      # Seconds between beeps
 BEEP_FILE="$STATE_DIR/beep.mp3"  # Custom beep sound
 ```
 
-The installer includes a default beep sound. You can replace it with any MP3 file.
+The installer includes a default beep sound. You can replace it with any tiny MP3 file that emits a non-distracting pip while recording is in progress.
 
 ### Transcription
 
@@ -267,8 +267,8 @@ vrecord stop -t
 
 The transcription will run after the MP3 file is created. The `transcribe` command will be called with the MP3 filename as its argument.
 
-**Note**: To use the transcription feature, install the transcribe tool from:
-[https://github.com/Open-Technology-Foundation/transcribe](https://github.com/Open-Technology-Foundation/transcribe)
+**Note**: If you have OPENAI_API_KEY, you can use the transcription feature.  Install the transcribe tool from:
+[https://github.com/Open-Technology-Foundation/transcribe](https://github.com/Open-Technology-Foundation/transcribe).  Use will require OPENAI_API_KEY.
 
 ### Additional Configuration Options
 
@@ -323,10 +323,6 @@ See `config.sample` for all available options and examples.
 ## License
 
 GPL-3.0-or-later - see LICENSE file for details
-
-## Author
-
-Generated with Claude Code
 
 ## Repository
 
