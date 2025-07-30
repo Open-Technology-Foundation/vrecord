@@ -67,6 +67,88 @@ decp() { ((DEBUG)) || return 0; >&2 declare -p "$@"; }
 trim() { local -- v="$*"; v="${v#"${v%%[![:blank:]]*}"}"; echo -n "${v%"${v##*[![:blank:]]}"}"; }
 
 # ============================================================================
+# SECURITY AND VALIDATION FUNCTIONS
+# ============================================================================
+# validate_safe_filename: Validate filename for safety against injection attacks
+validate_safe_filename() {
+  local -- filename="$1"
+  local -i allow_path="${2:-0}"  # Allow paths with slashes
+
+  # Check for empty filename
+  if [[ -z "$filename" ]]; then
+    error "Filename cannot be empty"
+    return 1
+  fi
+
+  # Check length (255 for filename, longer for full paths)
+  local -i max_length=255
+  ((allow_path)) && max_length=4096
+  if [[ ${#filename} -gt $max_length ]]; then
+    error "Filename too long (max $max_length characters)"
+    return 1
+  fi
+
+  # Check for directory traversal
+  if [[ "$filename" =~ \.\. ]]; then
+    error "Directory traversal not allowed in filename"
+    return 1
+  fi
+
+  # Check for null bytes
+  if [[ "$filename" != "${filename//$'\x00'/}" ]]; then
+    error "Null bytes not allowed in filename"
+    return 1
+  fi
+
+  # Validate characters based on whether paths are allowed
+  if ((allow_path)); then
+    # Allow alphanumeric, dots, underscores, hyphens, and forward slashes
+    if [[ "$filename" =~ [^a-zA-Z0-9._/-] ]]; then
+      error "Unsafe characters in filename. Only alphanumeric, dots, underscores, hyphens and slashes allowed."
+      return 1
+    fi
+  else
+    # Disallow slashes for pure filenames
+    if [[ "$filename" =~ [^a-zA-Z0-9._-] ]]; then
+      error "Unsafe characters in filename. Only alphanumeric, dots, underscores and hyphens allowed."
+      return 1
+    fi
+  fi
+
+  # Check for shell metacharacters and other dangerous characters
+  if [[ "$filename" =~ [\$\`\(\)\{\}\[\]\<\>\|\&\;\'\"\*\?\\] ]]; then
+    error "Shell metacharacters not allowed in filename"
+    return 1
+  fi
+
+  # Check for leading dash (could be interpreted as option)
+  if [[ "$filename" =~ ^- ]]; then
+    error "Filename cannot start with dash"
+    return 1
+  fi
+
+  return 0
+}
+
+# validate_recording_path: Ensure path is within recording directory
+validate_recording_path() {
+  local -- filepath="$1"
+
+  # Get absolute paths for comparison
+  local -- abs_path abs_recording_dir
+  abs_path=$(readlink -f "$filepath" 2>/dev/null) || abs_path=$(realpath "$filepath" 2>/dev/null) || abs_path="$filepath"
+  abs_recording_dir=$(readlink -f "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir=$(realpath "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir="$RECORDING_DIR"
+
+  # Must be under RECORDING_DIR
+  if [[ "$abs_path" != "$abs_recording_dir"/* ]] && [[ "$abs_path" != "$abs_recording_dir" ]]; then
+    error "File must be within recording directory: $RECORDING_DIR"
+    return 1
+  fi
+
+  return 0
+}
+
+# ============================================================================
 # GLOBAL VARIABLES AND CONFIGURATION
 # ============================================================================
 # Configuration variables with defaults
@@ -153,31 +235,99 @@ check_dependencies() {
 # ============================================================================
 # acquire_lock: Obtain exclusive lock to prevent concurrent instances
 acquire_lock() {
-  local -i timeout=5
-  local -i elapsed=0
+  local -i timeout="${1:-5}"
   
-  while [[ -f "$LOCK_FILE" ]] && ((elapsed < timeout)); do
-    local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "unknown")
-    if [[ "$lock_pid" != "unknown" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
-      warn "Removing stale lock file"
-      rm -f "$LOCK_FILE"
-      break
+  # Ensure lock directory exists
+  local -- lock_dir=$(dirname "$LOCK_FILE")
+  [[ -d "$lock_dir" ]] || mkdir -p "$lock_dir" || {
+    error "Cannot create lock directory: $lock_dir"
+    return 1
+  }
+  
+  if command -v flock >/dev/null 2>&1; then
+    # Use flock for atomic locking
+    debug "Using flock for lock management"
+
+    # Create lock file if it doesn't exist
+    touch "$LOCK_FILE" 2>/dev/null || {
+      error "Cannot create lock file: $LOCK_FILE"
+      return 1
+    }
+
+    # Try to acquire exclusive lock with timeout
+    if flock -n -E 1 -w "$timeout" "$LOCK_FILE" -c "echo $$ > '$LOCK_FILE'"; then
+      debug "Lock acquired using flock"
+      return 0
+    else
+      error "Another instance is running (timeout after ${timeout}s)"
+      return 1
     fi
-    sleep 0.5
-    ((elapsed+=1))
-  done
-  
-  if [[ -f "$LOCK_FILE" ]]; then
+  else
+    # Fallback: Use atomic file operations
+    debug "Using atomic file operations for lock management"
+
+    local -- temp_lock="$LOCK_FILE.$$"
+    local -i elapsed=0
+
+    # Write PID to temp file
+    echo $$ > "$temp_lock" 2>/dev/null || {
+      error "Cannot create temporary lock file"
+      return 1
+    }
+
+    # Try to acquire lock with timeout
+    while ((elapsed < timeout)); do
+      # Try atomic move (only succeeds if target doesn't exist)
+      if mv -n "$temp_lock" "$LOCK_FILE" 2>/dev/null; then
+        debug "Lock acquired using atomic move"
+        return 0
+      fi
+
+      # Check if existing lock is stale
+      local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+      if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        warn "Removing stale lock file (PID: $lock_pid)"
+        rm -f "$LOCK_FILE"
+        # Recreate temp file if needed
+        [[ -f "$temp_lock" ]] || echo $$ > "$temp_lock" 2>/dev/null
+        continue
+      fi
+
+      sleep 0.5
+      ((elapsed+=1))
+    done
+
+    # Cleanup temp file
+    rm -f "$temp_lock"
+
     error "Another instance is running (PID: $(cat "$LOCK_FILE" 2>/dev/null || echo "unknown"))"
     return 1
   fi
-  
-  echo $$ > "$LOCK_FILE"
 }
 
 release_lock() {
-  if [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$$" ]]; then
-    rm -f "$LOCK_FILE"
+  if [[ -f "$LOCK_FILE" ]]; then
+    local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ "$lock_pid" == "$$" ]]; then
+      rm -f "$LOCK_FILE"
+      debug "Lock released"
+    else
+      warn "Not releasing lock - owned by different process (PID: $lock_pid)"
+    fi
+  fi
+}
+
+# validate_lock: Check if a valid lock exists
+validate_lock() {
+  if [[ -f "$LOCK_FILE" ]]; then
+    local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      return 0  # Valid lock exists
+    else
+      return 1  # Stale lock
+    fi
+  else
+    return 1  # No lock
   fi
 }
 
@@ -192,7 +342,7 @@ cleanup_on_exit() {
   if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR/ffmpeg.pid" ]]; then
     local -- pid=$(cat "$TEMP_DIR/ffmpeg.pid" 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "Script interrupted, recording continues in background"
+      warn "Recording continues in background"
       warn "Use '$PRG stop' to stop recording"
     fi
   fi
@@ -535,6 +685,21 @@ start_recording() {
   local -- resume_file="${2:-}"
   local -i continue_last="${3:-0}"
   
+  # Validate filename prefix if provided and not using continue/resume
+  if [[ -n "$filename_prefix" ]] && [[ "$filename_prefix" != "$DEFAULT_PREFIX" ]] && \
+     [[ -z "$resume_file" ]] && ((continue_last == 0)); then
+    if ! validate_safe_filename "$filename_prefix" 0; then
+      return 1
+    fi
+  fi
+
+  # Validate resume file if provided
+  if [[ -n "$resume_file" ]]; then
+    if ! validate_safe_filename "$resume_file" 1; then
+      return 1
+    fi
+  fi
+
   check_dependencies
   acquire_lock || return 1
   init_temp_dir
@@ -564,10 +729,18 @@ start_recording() {
   # Check if we're resuming an existing file
   if [[ -n "$resume_file" ]]; then
     if [[ -f "$resume_file" ]]; then
+      # Validate full path is within recording directory
+      if ! validate_recording_path "$resume_file"; then
+        return 1
+      fi
       # File exists, good to go
       true
     elif [[ -f "$RECORDING_DIR/$resume_file" ]]; then
       resume_file="$RECORDING_DIR/$resume_file"
+      # Validate constructed path
+      if ! validate_recording_path "$resume_file"; then
+        return 1
+      fi
     else
       error "File '$resume_file' not found!" \
             "Use 'list' command to see available recordings."
@@ -1094,6 +1267,10 @@ process_command() {
               die 2 "--resume requires a filename"
             fi
             resume_file="$2"
+            # Validate resume filename
+            if ! validate_safe_filename "$resume_file" 1; then
+              die 2 "Invalid resume filename"
+            fi
             shift 2
             ;;
           -t|--transcribe)
@@ -1107,6 +1284,10 @@ process_command() {
             # This is the prefix
             if [[ -z "$prefix" ]]; then
               prefix="$1"
+              # Validate prefix
+              if ! validate_safe_filename "$prefix" 0; then
+                die 2 "Invalid filename prefix"
+              fi
             else
               die 2 "Too many arguments for start command"
             fi
