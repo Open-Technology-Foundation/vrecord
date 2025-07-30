@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed shellcheck warning by replacing `ls -t` with `find` command
 - Improved disk space management with configurable thresholds
 - Enhanced logging with automatic rotation and compression
+- System installations now place beep.mp3 in /usr/local/share/vrecord/
+- Beep file search now checks multiple standard locations
 
 ### Configuration Options
 - `RECORDING_DIR` - Directory for saved recordings

@@ -41,6 +41,9 @@ BEEP_ENABLED=1        # Enable beep notifications (0=disabled, 1=enabled)
 BEEP_INTERVAL=60      # Seconds between beeps during recording
 BEEP_FILE="$STATE_DIR/beep.mp3"  # Path to beep sound file
 
+# Note: For system installations, beep.mp3 is installed to:
+# /usr/local/share/vrecord/beep.mp3
+
 # Example: High quality recording settings
 # AUDIO_FORMAT="pcm_s24le"
 # SAMPLE_RATE=48000

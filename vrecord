@@ -176,7 +176,9 @@ acquire_lock() {
 }
 
 release_lock() {
-  [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$$" ]] && rm -f "$LOCK_FILE"
+  if [[ -f "$LOCK_FILE" ]] && [[ "$(cat "$LOCK_FILE" 2>/dev/null)" == "$$" ]]; then
+    rm -f "$LOCK_FILE"
+  fi
 }
 
 # ============================================================================
@@ -437,16 +439,29 @@ beep_loop() {
   # Check if beep is enabled
   ((BEEP_ENABLED == 0 || NO_BEEP == 1)) && return 0
   
-  # Check if beep file exists
-  if [[ ! -f "$BEEP_FILE" ]]; then
-    # Try the local beep.mp3 in the script directory
-    local -- script_dir=$(dirname "$PRG0")
-    if [[ -f "$script_dir/beep.mp3" ]]; then
-      BEEP_FILE="$script_dir/beep.mp3"
-    else
-      debug "Beep file not found: $BEEP_FILE"
-      return 0
+  # Search for beep file in multiple locations
+  local -- beep_locations=(
+    "$BEEP_FILE"  # User configured location
+    "$STATE_DIR/beep.mp3"  # User's state directory
+    "/usr/local/share/vrecord/beep.mp3"  # System installation
+    "/usr/share/vrecord/beep.mp3"  # Alternative system location
+    "$(dirname "$PRG0")/beep.mp3"  # Same directory as script
+  )
+
+  local -- found=0
+  local -- location
+  for location in "${beep_locations[@]}"; do
+    if [[ -f "$location" ]]; then
+      BEEP_FILE="$location"
+      found=1
+      debug "Using beep file: $BEEP_FILE"
+      break
     fi
+  done
+
+  if ((found == 0)); then
+    debug "Beep file not found in any standard location"
+    return 0
   fi
   
   # Check if ffplay is available
@@ -1023,9 +1038,9 @@ parse_args() {
         show_help
         ;;
       -V|--version)
-        cat <<EOF
-$PRG version $VERSION
-Copyright (C) 2024 Generated with Claude Code
+        echo "$PRG $VERSION"
+        cat >&2 <<EOF
+Copyright (C) 2024 Open Technology Foundation
 License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.

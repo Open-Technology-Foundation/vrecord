@@ -35,6 +35,9 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 # Stop recording and save
 ./vrecord stop
 
+# Stop and transcribe (if transcribe tool is installed)
+./vrecord stop -t
+
 # Your recording is saved in ~/Recordings/
 ```
 
@@ -129,8 +132,14 @@ vrecord start
 vrecord start interview
 # Creates: interview_20240115_143022.wav
 
+# Start with transcription enabled
+vrecord start -t meeting
+
 # Stop recording (automatically converts to MP3)
 vrecord stop
+
+# Stop and transcribe
+vrecord stop -t
 ```
 
 ### Pause and Resume
@@ -151,6 +160,9 @@ vrecord start -c
 
 # Resume a specific recording file
 vrecord start -r voice_recording_20240115_143022.wav
+
+# Start recording with transcription enabled
+vrecord start -t podcast
 ```
 
 ### Other Commands
@@ -172,6 +184,11 @@ vrecord stop  # Won't create MP3
 # Disable beep notifications
 vrecord -b start
 # Or: vrecord --no-beep start
+
+# Enable transcription globally
+vrecord -n start -t   # No MP3 conversion but transcribe enabled (won't transcribe without MP3)
+vrecord start -t      # Start with transcription
+vrecord stop          # Will transcribe if started with -t
 
 # Show version
 vrecord -V
@@ -206,6 +223,8 @@ vrecord -V
 - **Recordings**: `~/Recordings/`
 - **State files**: `~/.vrecord/`
 - **Temporary files**: `/tmp/vrecord.XXXXXX/`
+- **System beep file**: `/usr/local/share/vrecord/beep.mp3` (system installation)
+- **User beep file**: `~/.vrecord/beep.mp3` (user installation)
 
 ## Configuration
 
@@ -216,10 +235,13 @@ vrecord supports configuration through multiple methods (in order of precedence)
    - `VRECORD_STATE_DIR` - State and config directory
    - `VRECORD_DEFAULT_PREFIX` - Default filename prefix
    - `VRECORD_MP3_BITRATE` - MP3 encoding bitrate
+   - Additional options can be set via environment (prefix with `VRECORD_`)
 
 2. **User config file**: `~/.vrecord/config`
-3. **System config file**: `/etc/vrecord/config`
+3. **System config file**: `/etc/vrecord/config` (if exists)
 4. **Built-in defaults** (lowest priority)
+
+Note: Config files are bash scripts that set variables. They are sourced in order, with later values overriding earlier ones.
 
 ### Beep Notifications
 
@@ -248,7 +270,16 @@ The transcription will run after the MP3 file is created. The `transcribe` comma
 **Note**: To use the transcription feature, install the transcribe tool from:
 [https://github.com/Open-Technology-Foundation/transcribe](https://github.com/Open-Technology-Foundation/transcribe)
 
-See `config.sample` for all available options.
+### Additional Configuration Options
+
+- `AUDIO_FORMAT` - Audio codec (default: pcm_s16le)
+- `SAMPLE_RATE` - Sample rate in Hz (default: 44100)
+- `CHANNELS` - Number of channels (default: 2 for stereo)
+- `MIN_DISK_SPACE_MB` - Minimum required disk space (default: 100)
+- `LOG_MAX_SIZE_MB` - Maximum log file size before rotation (default: 10)
+- `LOG_MAX_FILES` - Number of rotated log files to keep (default: 5)
+
+See `config.sample` for all available options and examples.
 
 ## How It Works
 

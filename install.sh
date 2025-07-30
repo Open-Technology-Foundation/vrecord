@@ -36,8 +36,10 @@ SCRIPT_DIR=""
 # Installation paths
 USER_BIN_DIR="$HOME/.local/bin"
 USER_COMPLETION_DIR="$HOME/.local/share/bash-completion/completions"
+USER_DATA_DIR="$HOME/.vrecord"
 SYSTEM_BIN_DIR="/usr/local/bin"
 SYSTEM_COMPLETION_DIR=""  # Will be detected
+SYSTEM_DATA_DIR="/usr/local/share/vrecord"
 
 # URLs for remote installation
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/main"
@@ -195,16 +197,18 @@ check_dependencies() {
 
 # Create required directories
 create_directories() {
-    local bin_dir completion_dir config_dir
+    local bin_dir completion_dir config_dir data_dir
     
     if [[ "$INSTALL_MODE" == "user" ]]; then
         bin_dir="$USER_BIN_DIR"
         completion_dir="$USER_COMPLETION_DIR"
         config_dir="$HOME/.vrecord"
+        data_dir="$USER_DATA_DIR"
     else
         bin_dir="$SYSTEM_BIN_DIR"
         completion_dir="$SYSTEM_COMPLETION_DIR"
         config_dir="$HOME/.vrecord"  # Config always goes to user home
+        data_dir="$SYSTEM_DATA_DIR"
     fi
     
     # Create directories
@@ -218,6 +222,16 @@ create_directories() {
             fi
         fi
     done
+    
+    # Create data directory for system installations
+    if [[ "$INSTALL_MODE" == "system" ]] && [[ ! -d "$data_dir" ]]; then
+        if ((DRY_RUN)); then
+            info "[DRY RUN] Would create directory: $data_dir"
+        else
+            info "Creating directory: $data_dir"
+            mkdir -p "$data_dir"
+        fi
+    fi
 }
 
 # Download file with progress
@@ -357,8 +371,15 @@ install_config() {
 
 # Install beep sound
 install_beep() {
-    local config_dir="$HOME/.vrecord"
-    local beep_file="$config_dir/beep.mp3"
+    local data_dir beep_file
+    
+    if [[ "$INSTALL_MODE" == "user" ]]; then
+        data_dir="$USER_DATA_DIR"
+    else
+        data_dir="$SYSTEM_DATA_DIR"
+    fi
+    
+    beep_file="$data_dir/beep.mp3"
     local src_file
     
     # Skip if beep already exists
@@ -396,14 +417,16 @@ install_beep() {
 # Create uninstall script
 create_uninstall_script() {
     local uninstall_script="$HOME/.vrecord/uninstall.sh"
-    local bin_dir completion_dir
+    local bin_dir completion_dir data_dir
     
     if [[ "$INSTALL_MODE" == "user" ]]; then
         bin_dir="$USER_BIN_DIR"
         completion_dir="$USER_COMPLETION_DIR"
+        data_dir="$USER_DATA_DIR"
     else
         bin_dir="$SYSTEM_BIN_DIR"
         completion_dir="$SYSTEM_COMPLETION_DIR"
+        data_dir="$SYSTEM_DATA_DIR"
     fi
     
     if ((DRY_RUN)); then
@@ -435,6 +458,12 @@ fi
 if [[ -f "$completion_dir/vrecord" ]]; then
     echo "Removing $completion_dir/vrecord"
     ${sudo_cmd}rm -f "$completion_dir/vrecord"
+fi
+
+# Remove data directory (system installations only)
+if [[ "$INSTALL_MODE" == "system" ]] && [[ -d "$data_dir" ]]; then
+    echo "Removing $data_dir"
+    ${sudo_cmd}rm -rf "$data_dir"
 fi
 
 # Ask about config removal
