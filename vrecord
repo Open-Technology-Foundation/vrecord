@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # vrecord - Voice Recorder with Resume Capability
 # Copyright (C) 2024 Generated with Claude Code
 #
@@ -38,32 +38,46 @@
 #shellcheck disable=SC2155
 set -euo pipefail
 
-# Script name and path detection
-#shellcheck disable=SC2034
-PRG0=$(readlink -en -- "$0")  # Full path to script
-PRG=$(basename -- "$PRG0")     # Script basename
-readonly PRG0 PRG
-
-# Version information
-readonly VERSION="1.0.0"
+# Script metadata
+declare -- VERSION='1.0.0'
+declare -- PRG0 PRG PRGDIR
+PRG0=$(readlink -en -- "$0")       # Full path to script
+PRG=${PRG0##*/}                    # Script basename
+PRGDIR=${PRG0%/*}                  # Script directory
+readonly -- VERSION PRG0 PRG PRGDIR
 
 # ============================================================================
 # LOGGING AND UTILITY FUNCTIONS
 # ============================================================================
-#shellcheck disable=SC2015
-declare -- RED='' YELLOW='' GREEN='' NOCOLOR=''
-[[ -t 2 ]] && declare -r RED=$'\033[0;31m' YELLOW=$'\033[0;33m' GREEN=$'\033[0;32m' NOCOLOR=$'\033[0m'
-readonly RED YELLOW GREEN NOCOLOR
-# Verbosity control: 0=quiet, 1=normal, 2+=verbose
-declare -i VERBOSE=1 DEBUG=0
-vecho() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do printf '%s: %s\n' "$PRG" "$msg"; done; }
-info() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %s\n' "$PRG" "$msg"; done; }
-warn() { ((VERBOSE)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %swarn%s: %s\n' "$PRG" "$YELLOW" "$NOCOLOR" "$msg"; done; }
-error() { local -- msg; for msg in "$@"; do >&2 printf '%s: %serror%s: %s\n' "$PRG" "$RED" "$NOCOLOR" "$msg"; done; }
-success() { local -- msg; for msg in "$@"; do >&2 printf '%s: %ssuccess%s: %s\n' "$PRG" "$GREEN" "$NOCOLOR" "$msg"; done; }
-debug() { ((DEBUG)) || return 0; local -- msg; for msg in "$@"; do >&2 printf '%s: %sdebug%s: %s\n' "$PRG" "$YELLOW" "$NOCOLOR" "$msg"; done; }
-die() { (($# < 2)) || info "${@:2}"; (($# < 1)) || exit "$1"; exit 1; }
-decp() { ((DEBUG)) || return 0; >&2 declare -p "$@"; }
+# Standard colours
+[[ -t 2 ]] && declare -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m' || declare -- RED='' GREEN='' YELLOW='' CYAN='' NC=''
+readonly -- RED GREEN YELLOW CYAN NC
+# Verbosity control
+declare -i VERBOSE=1 PROMPT=0 DEBUG=0
+# Core message function using FUNCNAME for context
+_msg() {
+  local -- status="${FUNCNAME[1]}" prefix="$PRG:" msg
+  case "$status" in
+    success) prefix+=" ${GREEN}✓${NC}" ;;
+    warn)    prefix+=" ${YELLOW}⚡${NC}" ;;
+    info)    prefix+=" ${CYAN}◉${NC}" ;;
+    error)   prefix+=" ${RED}✗${NC}" ;;
+    debug)   prefix+=" ${YELLOW}DEBUG${NC}:" ;;
+    *)       ;;
+  esac
+  for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
+}
+# Conditional output based on verbosity
+vecho() { ((VERBOSE)) || return 0; _msg "$@"; }
+success() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+warn() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+info() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+debug() { ((DEBUG)) || return 0; >&2 _msg "$@"; }
+# Unconditional output
+error() { >&2 _msg "$@"; }
+die() { (($# > 1)) && error "${@:2}"; exit "${1:-0}"; }
+# Utility functions
+decp() { declare -p "$@" | sed 's/^declare -[a-zA-Z-]* //'; }
 trim() { local -- v="$*"; v="${v#"${v%%[![:blank:]]*}"}"; echo -n "${v%"${v##*[![:blank:]]}"}"; }
 
 # ============================================================================
@@ -157,15 +171,15 @@ declare -- STATE_DIR="${STATE_DIR:-$HOME/.vrecord}"
 declare -- DEFAULT_PREFIX="${DEFAULT_PREFIX:-voice_recording}"
 declare -- MP3_BITRATE="${MP3_BITRATE:-192k}"
 declare -- AUDIO_FORMAT="${AUDIO_FORMAT:-pcm_s16le}"
-declare -i SAMPLE_RATE="${SAMPLE_RATE:-44100}"
-declare -i CHANNELS="${CHANNELS:-2}"
-declare -i MIN_DISK_SPACE_MB="${MIN_DISK_SPACE_MB:-100}"
-declare -i LOG_MAX_SIZE_MB="${LOG_MAX_SIZE_MB:-10}"
-declare -i LOG_MAX_FILES="${LOG_MAX_FILES:-5}"
+declare -i SAMPLE_RATE=${SAMPLE_RATE:-44100}
+declare -i CHANNELS=${CHANNELS:-2}
+declare -i MIN_DISK_SPACE_MB=${MIN_DISK_SPACE_MB:-100}
+declare -i LOG_MAX_SIZE_MB=${LOG_MAX_SIZE_MB:-10}
+declare -i LOG_MAX_FILES=${LOG_MAX_FILES:-5}
 
 # Beep notification settings
-declare -i BEEP_ENABLED="${BEEP_ENABLED:-1}"  # Enable beep notifications
-declare -i BEEP_INTERVAL="${BEEP_INTERVAL:-60}"  # Seconds between beeps
+declare -i BEEP_ENABLED=${BEEP_ENABLED:-1}      # Enable beep notifications
+declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}   # Seconds between beeps
 declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"  # Path to beep sound
 
 # Directory paths
@@ -1185,61 +1199,40 @@ EOT
 # parse_args: Parse global options and extract command
 parse_args() {
   local -a args=()
-  local -- command=""
-  
-  # First pass: extract global options and command
-  # Global options can appear anywhere in the command line
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -n|--no-mp3)
-        NO_MP3=1
-        shift
-        ;;
-      -b|--no-beep)
-        NO_BEEP=1
-        shift
-        ;;
-      -v|--verbose)
-        VERBOSE=$((VERBOSE + 1))
-        shift
-        ;;
-      -q|--quiet)
-        VERBOSE=0
-        shift
-        ;;
-      -h|--help|help)
-        show_help
-        ;;
-      -V|--version)
-        echo "$PRG $VERSION"
-        cat >&2 <<EOF
+  local -- command=''
+
+  # Standard argument parsing pattern
+  while (($#)); do case "$1" in
+    -n|--no-mp3)     NO_MP3=1 ;;
+    -b|--no-beep)    NO_BEEP=1 ;;
+    -v|--verbose)    ((VERBOSE+=1)) ;;
+    -q|--quiet)      VERBOSE=0 ;;
+    -h|--help|help)  show_help ;;
+    -V|--version)    echo "$PRG $VERSION"
+                     cat >&2 <<EOF
 Copyright (C) 2024 Open Technology Foundation
 License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
 EOF
-        exit 0
-        ;;
-      -*)
-        # Unknown option - save for command processing
+                     exit 0 ;;
+    -[nbvqhV]*)      #shellcheck disable=SC2046 #split up single options
+                     set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}" ;;
+    -*)
+      # Unknown option - save for command processing
+      args+=("$1") ;;
+    *)
+      # This is the command or a command argument
+      if [[ -z "$command" ]]; then
+        command="$1"
+      else
         args+=("$1")
-        shift
-        ;;
-      *)
-        # This is the command or a command argument
-        if [[ -z "$command" ]]; then
-          command="$1"
-        else
-          args+=("$1")
-        fi
-        shift
-        ;;
-    esac
-  done
-  
+      fi ;;
+  esac; shift; done
+
   # If no command given, show help
   [[ -z "$command" ]] && show_help
-  
+
   # Process the command with remaining arguments
   process_command "$command" "${args[@]}"
 }
@@ -1251,50 +1244,32 @@ process_command() {
   
   case "$command" in
     start)
-      local -- prefix=""
-      local -- resume_file=""
+      local -- prefix=''
+      local -- resume_file=''
       local -i continue_last=0
-      
+
       # Parse start command options
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          -c|--continue-last)
-            continue_last=1
-            shift
-            ;;
-          -r|--resume)
-            if [[ -z "${2:-}" ]]; then
-              die 2 "--resume requires a filename"
-            fi
-            resume_file="$2"
-            # Validate resume filename
-            if ! validate_safe_filename "$resume_file" 1; then
-              die 2 "Invalid resume filename"
-            fi
-            shift 2
-            ;;
-          -t|--transcribe)
-            TRANSCRIBE=1
-            shift
-            ;;
-          -*)
-            die 2 "Unknown option for start: '$1'"
-            ;;
-          *)
-            # This is the prefix
-            if [[ -z "$prefix" ]]; then
-              prefix="$1"
-              # Validate prefix
-              if ! validate_safe_filename "$prefix" 0; then
-                die 2 "Invalid filename prefix"
-              fi
-            else
-              die 2 "Too many arguments for start command"
-            fi
-            shift
-            ;;
-        esac
-      done
+      while (($#)); do
+ case "$1" in
+        -c|--continue-last)
+          continue_last=1 ;;
+        -r|--resume)
+          [[ -z "${2:-}" ]] && die 2 "--resume requires a filename"
+          resume_file="$2"
+          # Validate resume filename
+          validate_safe_filename "$resume_file" 1 || die 2 "Invalid resume filename"
+          shift ;;
+        -t|--transcribe)
+          TRANSCRIBE=1 ;;
+        -*)
+          die 2 "Unknown option for start: '$1'" ;;
+        *)
+          # This is the prefix
+          [[ -z "$prefix" ]] || die 2 "Too many arguments for start command"
+          prefix="$1"
+          # Validate prefix
+          validate_safe_filename "$prefix" 0 || die 2 "Invalid filename prefix" ;;
+      esac; shift; done
       
       # Validate conflicting options
       if ((continue_last)) && [[ -n "$resume_file" ]]; then
@@ -1317,20 +1292,11 @@ process_command() {
       ;;
     stop)
       # Parse stop command options
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          -t|--transcribe)
-            TRANSCRIBE=1
-            shift
-            ;;
-          -*)
-            die 2 "Unknown option for stop: '$1'"
-            ;;
-          *)
-            die 2 "Unexpected argument for stop: '$1'"
-            ;;
-        esac
-      done
+      while (($#)); do case "$1" in
+        -t|--transcribe)  TRANSCRIBE=1 ;;
+        -*)               die 2 "Unknown option for stop: '$1'" ;;
+        *)                die 2 "Unexpected argument for stop: '$1'" ;;
+      esac; shift; done
       stop_recording
       ;;
     status)
@@ -1340,20 +1306,11 @@ process_command() {
       local -i show_all=0
       
       # Parse list options
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --all)
-            show_all=1
-            shift
-            ;;
-          -*)
-            die 2 "Unknown option for list: '$1'"
-            ;;
-          *)
-            die 2 "Unknown argument for list: '$1'"
-            ;;
-        esac
-      done
+      while (($#)); do case "$1" in
+        --all)  show_all=1 ;;
+        -*)     die 2 "Unknown option for list: '$1'" ;;
+        *)      die 2 "Unknown argument for list: '$1'" ;;
+      esac; shift; done
       
       list_recordings "$show_all"
       ;;

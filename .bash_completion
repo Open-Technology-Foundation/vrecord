@@ -1,0 +1,117 @@
+#!/bin/bash
+# Bash completion for vrecord
+# This file provides tab completion for the vrecord voice recording script
+
+_vrecord() {
+  local cur prev opts
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  # Global options that can appear anywhere
+  local global_opts="-n --no-mp3 -b --no-beep -v --verbose -q --quiet -h --help -V --version"
+  
+  # Commands
+  local commands="start pause resume stop status list help"
+  
+  # Start command options
+  local start_opts="-c --continue-last -r --resume -t --transcribe"
+  
+  # Stop command options
+  local stop_opts="-t --transcribe"
+  
+  # List command options
+  local list_opts="--all"
+
+  # If we're at the first word after vrecord (or after global options)
+  if [[ ${#COMP_WORDS[@]} -eq 2 ]] || _vrecord_is_after_global_opts; then
+    COMPREPLY=($(compgen -W "$commands $global_opts" -- "$cur"))
+    return 0
+  fi
+
+  # Get the command (skip over global options)
+  local cmd=""
+  local i=1
+  while [[ $i -lt ${#COMP_WORDS[@]} ]]; do
+    case "${COMP_WORDS[$i]}" in
+      -n|--no-mp3|-b|--no-beep|-q|--quiet|-h|--help|-V|--version)
+        ((i++))
+        ;;
+      -v|--verbose)
+        ((i++))
+        ;;
+      start|pause|resume|stop|status|list|help)
+        cmd="${COMP_WORDS[$i]}"
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  case "$cmd" in
+    start)
+      case "$prev" in
+        -r|--resume)
+          # Complete with WAV files from recordings directory
+          local recording_dir="${RECORDING_DIR:-$HOME/Recordings}"
+          if [[ -d "$recording_dir" ]]; then
+            local wav_files=$(find "$recording_dir" -maxdepth 1 -name "*.wav" -type f -printf '%f\n' 2>/dev/null)
+            COMPREPLY=($(compgen -W "$wav_files" -- "$cur"))
+          fi
+          ;;
+        *)
+          if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "$start_opts $global_opts" -- "$cur"))
+          else
+            # Complete with filename prefixes or options
+            COMPREPLY=($(compgen -W "$start_opts $global_opts" -- "$cur"))
+          fi
+          ;;
+      esac
+      ;;
+    stop)
+      COMPREPLY=($(compgen -W "$stop_opts $global_opts" -- "$cur"))
+      ;;
+    list)
+      COMPREPLY=($(compgen -W "$list_opts $global_opts" -- "$cur"))
+      ;;
+    pause|resume|status|help)
+      COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
+      ;;
+    *)
+      # No command found yet, complete with commands and global options
+      COMPREPLY=($(compgen -W "$commands $global_opts" -- "$cur"))
+      ;;
+  esac
+}
+
+# Helper function to check if we're positioned after global options
+_vrecord_is_after_global_opts() {
+  local i=1
+  local found_command=0
+  
+  while [[ $i -lt $((COMP_CWORD)) ]]; do
+    case "${COMP_WORDS[$i]}" in
+      -n|--no-mp3|-b|--no-beep|-q|--quiet|-h|--help|-V|--version)
+        ((i++))
+        ;;
+      -v|--verbose)
+        ((i++))
+        ;;
+      start|pause|resume|stop|status|list|help)
+        found_command=1
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  
+  [[ $found_command -eq 0 ]]
+}
+
+# Register the completion function
+complete -F _vrecord vrecord

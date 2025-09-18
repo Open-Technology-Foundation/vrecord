@@ -1,6 +1,6 @@
-# vrecord - Bash Voice Recorder, with Continue, Resume, Transcribe Capability
+# vrecord - Advanced Bash Voice Recorder
 
-A robust command-line voice recording tool for Linux that supports pause/resume functionality and automatic MP3 conversion.
+A robust command-line voice recording tool for Linux with pause/resume, continuation, and transcription capabilities. Built with modern Bash standards for reliability and maintainability.
 
 ## Quick Install
 
@@ -27,6 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 - **No data loss** - recordings are preserved even if interrupted
 - **Secure** - prevents command injection and ensures safe file handling
 - **Concurrent protection** - prevents multiple instances from interfering
+- **Modern Bash standards** - follows comprehensive coding guidelines for reliability
 
 ## Quick Start
 
@@ -55,6 +56,9 @@ Use the install script for automatic setup with bash completion:
 
 # User-only installation (no sudo needed)
 ./install.sh --user
+
+# Development installation (creates symlinks for testing)
+./install.sh --dev
 
 # See all options
 ./install.sh --help
@@ -93,11 +97,11 @@ The installer will:
 4. Enable bash completion:
    ```bash
    # System-wide
-   sudo cp vrecord-completion.bash /etc/bash_completion.d/vrecord
-   
+   sudo cp .bash_completion /etc/bash_completion.d/vrecord
+
    # Or user-only
    mkdir -p ~/.local/share/bash-completion/completions
-   cp vrecord-completion.bash ~/.local/share/bash-completion/completions/vrecord
+   cp .bash_completion ~/.local/share/bash-completion/completions/vrecord
    ```
 
 5. (Optional) Configure settings:
@@ -205,7 +209,7 @@ vrecord -V
 - `-n, --no-mp3`   Skip MP3 conversion when stopping
 - `-b, --no-beep`  Disable beep notifications for this session
 - `-q, --quiet`    Suppress output except errors
-- `-v, --verbose`  Increase verbosity
+- `-v, --verbose`  Increase verbosity (can be used multiple times)
 - `-h, --help`     Show help message
 - `-V, --version`  Display version information
 
@@ -340,8 +344,31 @@ vrecord implements several security measures:
 
 - Linux with PulseAudio
 - FFmpeg (with PulseAudio support)
-- Bash 4.0+
+- Bash 5.2+ (uses modern Bash features)
 - Optional: mediainfo (for detailed file information)
+
+## Development
+
+### Code Standards
+
+vrecord follows strict Bash coding standards for reliability and maintainability:
+
+- **Error Handling**: Uses `set -euo pipefail` for robust error handling
+- **Code Style**: Follows comprehensive Bash style guide (see [BASH-CODING-STYLE](https://github.com/Open-Technology-Foundation/bash-coding-standard))
+- **Indentation**: 2-space indentation throughout
+- **ShellCheck**: All code passes ShellCheck validation
+- **Testing**: Comprehensive test suite in `tests/` directory
+
+### Testing
+
+```bash
+# Run full test suite
+./run_tests.sh
+
+# Run specific test suite
+./tests/test_vrecord.sh basic_commands
+./tests/test_vrecord.sh recording_operations
+```
 
 ## License
 
