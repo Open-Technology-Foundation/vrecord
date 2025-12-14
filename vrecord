@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#shellcheck disable=SC2155,SC1090,SC1091,SC2119,SC2120,SC2034
 # vrecord - Voice Recorder with Resume Capability
 # Copyright (C) 2024 Generated with Claude Code
 #
@@ -35,28 +36,26 @@
 # Author: Generated with Claude Code
 # License: GPL-3.0-or-later
 #
-#shellcheck disable=SC2155
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
-declare -- VERSION='1.0.0'
-declare -- PRG0 PRG PRGDIR
-PRG0=$(readlink -en -- "$0")       # Full path to script
-PRG=${PRG0##*/}                    # Script basename
-PRGDIR=${PRG0%/*}                  # Script directory
-readonly -- VERSION PRG0 PRG PRGDIR
+VERSION='1.0.0'
+SCRIPT_PATH=$(realpath -- "$0")
+SCRIPT_DIR=${SCRIPT_PATH%/*}
+SCRIPT_NAME=${SCRIPT_PATH##*/}
+readonly -- VERSION SCRIPT_PATH SCRIPT_DIR SCRIPT_NAME                  
 
 # ============================================================================
 # LOGGING AND UTILITY FUNCTIONS
 # ============================================================================
-# Standard colours
-[[ -t 2 ]] && declare -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m' || declare -- RED='' GREEN='' YELLOW='' CYAN='' NC=''
-readonly -- RED GREEN YELLOW CYAN NC
 # Verbosity control
-declare -i VERBOSE=1 PROMPT=0 DEBUG=0
+declare -i VERBOSE=1 DEBUG=0 #PROMPT=0
+# Standard colours
+[[ -t 2 ]] && declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m' || declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
 # Core message function using FUNCNAME for context
 _msg() {
-  local -- status="${FUNCNAME[1]}" prefix="$PRG:" msg
+  local -- status="${FUNCNAME[1]}" prefix="$SCRIPT_NAME:" msg
   case "$status" in
     success) prefix+=" ${GREEN}✓${NC}" ;;
     warn)    prefix+=" ${YELLOW}⚡${NC}" ;;
@@ -357,7 +356,7 @@ cleanup_on_exit() {
     local -- pid=$(cat "$TEMP_DIR/ffmpeg.pid" 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       warn "Recording continues in background"
-      warn "Use '$PRG stop' to stop recording"
+      warn "Use '$SCRIPT_NAME stop' to stop recording"
     fi
   fi
   
@@ -411,7 +410,7 @@ clear_recording_dir() {
 init_temp_dir() {
   TEMP_DIR=$(get_recording_dir)
   if [[ -z "$TEMP_DIR" || ! -d "$TEMP_DIR" ]]; then
-    TEMP_DIR=$(mktemp -d /tmp/"$PRG".XXXXXX)
+    TEMP_DIR=$(mktemp -d /tmp/"$SCRIPT_NAME".XXXXXX)
     set_recording_dir "$TEMP_DIR"
   fi
   
@@ -560,9 +559,9 @@ rotate_log() {
     
     # Compress and rotate current log
     if command -v gzip >/dev/null 2>&1; then
-      gzip -c "$log_file" > "$log_file.1.gz" && > "$log_file"
+      gzip -c "$log_file" > "$log_file.1.gz" && : > "$log_file"
     else
-      mv "$log_file" "$log_file.1" && > "$log_file"
+      mv "$log_file" "$log_file.1" && : > "$log_file"
     fi
   fi
 }
@@ -609,7 +608,7 @@ beep_loop() {
     "$STATE_DIR/beep.mp3"  # User's state directory
     "/usr/local/share/vrecord/beep.mp3"  # System installation
     "/usr/share/vrecord/beep.mp3"  # Alternative system location
-    "$(dirname "$PRG0")/beep.mp3"  # Same directory as script
+    "$(dirname "$SCRIPT_PATH")/beep.mp3"  # Same directory as script
   )
 
   local -- found=0
@@ -845,7 +844,7 @@ start_recording() {
   echo 'recording' > "$STATE_FILE"
 
   info "Recording started. PID: $new_pid" \
-       "Use '$PRG stop' to stop recording"
+       "Use '$SCRIPT_NAME stop' to stop recording"
   
   # Start beep notifications
   start_beep_process
@@ -1147,7 +1146,7 @@ show_help() {
   cat <<EOT
 Voice Recorder with Resume Capability
 
-Usage: $PRG [global-options] <command> [command-options]
+Usage: $SCRIPT_NAME [global-options] <command> [command-options]
 
 Global Options (can appear anywhere):
   -n, --no-mp3     Skip MP3 conversion when stopping recording
@@ -1172,21 +1171,21 @@ Commands:
   help                     Show this help message
 
 Examples:
-  $PRG start                      # Start new recording with default prefix
-  $PRG start meeting              # Start new recording as meeting_TIMESTAMP.wav
-  $PRG -n start interview         # Start recording without MP3 conversion
-  $PRG start -c                   # Continue the most recent recording
-  $PRG start -t meeting           # Start recording with transcription enabled
-  $PRG stop --no-mp3              # Stop recording without MP3 conversion
-  $PRG stop -t                    # Stop and transcribe the MP3 file
-  $PRG -q start -r voice.wav      # Resume recording quietly
-  $PRG list --all                 # Show all files in recordings directory
+  $SCRIPT_NAME start                      # Start new recording with default prefix
+  $SCRIPT_NAME start meeting              # Start new recording as meeting_TIMESTAMP.wav
+  $SCRIPT_NAME -n start interview         # Start recording without MP3 conversion
+  $SCRIPT_NAME start -c                   # Continue the most recent recording
+  $SCRIPT_NAME start -t meeting           # Start recording with transcription enabled
+  $SCRIPT_NAME stop --no-mp3              # Stop recording without MP3 conversion
+  $SCRIPT_NAME stop -t                    # Stop and transcribe the MP3 file
+  $SCRIPT_NAME -q start -r voice.wav      # Resume recording quietly
+  $SCRIPT_NAME list --all                 # Show all files in recordings directory
 
 Recordings are saved to: $RECORDING_DIR
 State files are saved to: $STATE_DIR
 
 Note: Recording continues even if you exit this script.
-      Use '$PRG status' to check and '$PRG stop' to end recording.
+      Use '$SCRIPT_NAME status' to check and '$SCRIPT_NAME stop' to end recording.
 
 EOT
   exit 0
@@ -1208,7 +1207,7 @@ parse_args() {
     -v|--verbose)    ((VERBOSE+=1)) ;;
     -q|--quiet)      VERBOSE=0 ;;
     -h|--help|help)  show_help ;;
-    -V|--version)    echo "$PRG $VERSION"
+    -V|--version)    echo "$SCRIPT_NAME $VERSION"
                      cat >&2 <<EOF
 Copyright (C) 2024 Open Technology Foundation
 License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
@@ -1315,7 +1314,7 @@ process_command() {
       list_recordings "$show_all"
       ;;
     *)
-      die 2 "Unknown command: '$command'. Use '$PRG help' for usage."
+      die 2 "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage."
       ;;
   esac
 }

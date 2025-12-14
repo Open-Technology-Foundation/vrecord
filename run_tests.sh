@@ -1,7 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # run_tests.sh - Convenience script to run vrecord tests
 
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

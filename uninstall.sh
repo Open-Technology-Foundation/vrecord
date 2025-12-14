@@ -1,14 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # uninstall.sh - Uninstaller for vrecord
 # This is a template - the actual uninstall script is generated during installation
 
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
-# Colors
-readonly RED=$'\033[0;31m'
-readonly GREEN=$'\033[0;32m'
-readonly YELLOW=$'\033[0;33m'
-readonly NOCOLOR=$'\033[0m'
+# Colors (with TTY check)
+if [[ -t 1 && -t 2 ]]; then
+  readonly -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' NOCOLOR=$'\033[0m'
+else
+  readonly -- RED='' GREEN='' YELLOW='' NOCOLOR=''
+fi
 
 error() { echo "${RED}[ERROR]${NOCOLOR} $*" >&2; }
 warn() { echo "${YELLOW}[WARN]${NOCOLOR} $*" >&2; }
@@ -76,7 +78,7 @@ main() {
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             # Show what will be removed
             info "Contents:"
-            ls -la "$HOME/.vrecord/" | sed 's/^/  /'
+            find "$HOME/.vrecord/" -maxdepth 1 -printf '  %M %u %g %8s %TY-%Tm-%Td %f\n' 2>/dev/null || find "$HOME/.vrecord/" -maxdepth 1 -exec stat --printf='  %A %U %G %8s %y %n\n' {} \;
             
             read -p "Are you sure? This cannot be undone. [y/N] " -n 1 -r
             echo

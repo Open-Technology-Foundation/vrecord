@@ -1,8 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#shellcheck disable=SC2016,SC2034,SC2181
 # assert.sh - Simple assertion library for bash testing
 # Part of vrecord test suite
+#
+# ShellCheck disable notes:
+# - SC2016: Default messages use single quotes intentionally (templates)
+# - SC2034: CURRENT_TEST used by test framework for context
+# - SC2181: $? anti-pattern is intentional for assertion functions
 
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Color output for test results
 declare -- TEST_RED='' TEST_GREEN='' TEST_YELLOW='' TEST_NOCOLOR=''

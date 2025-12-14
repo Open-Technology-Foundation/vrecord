@@ -1,8 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test_vrecord.sh - Main test runner for vrecord
 # Usage: ./test_vrecord.sh [test_suite_name]
 
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

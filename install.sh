@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # install.sh - Installer for vrecord voice recording tool
 # 
 # Usage:
@@ -14,17 +14,18 @@
 #   --help      Show this help message
 
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script information
 readonly SCRIPT_NAME="vrecord installer"
 readonly VERSION="1.0"
 
-# Colors for output
-readonly RED=$'\033[0;31m'
-readonly GREEN=$'\033[0;32m'
-readonly YELLOW=$'\033[0;33m'
-readonly BLUE=$'\033[0;34m'
-readonly NOCOLOR=$'\033[0m'
+# Colors for output (with TTY check)
+if [[ -t 1 && -t 2 ]]; then
+  readonly -- RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' BLUE=$'\033[0;34m' NOCOLOR=$'\033[0m'
+else
+  readonly -- RED='' GREEN='' YELLOW='' BLUE='' NOCOLOR=''
+fi
 
 # Default values
 INSTALL_MODE="system"
