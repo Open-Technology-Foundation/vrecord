@@ -40,23 +40,26 @@ set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
-VERSION='1.0.0'
-SCRIPT_PATH=$(realpath -- "$0")
-SCRIPT_DIR=${SCRIPT_PATH%/*}
-SCRIPT_NAME=${SCRIPT_PATH##*/}
-readonly -- VERSION SCRIPT_PATH SCRIPT_DIR SCRIPT_NAME                  
+declare -r VERSION='1.0.0'
+declare -r SCRIPT_PATH=$(realpath -- "$0")
+declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # ============================================================================
 # LOGGING AND UTILITY FUNCTIONS
 # ============================================================================
 # Verbosity control
-declare -i VERBOSE=1 DEBUG=0 #PROMPT=0
+declare -i VERBOSE=1 DEBUG=0
 # Standard colours
-[[ -t 2 ]] && declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m' || declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
+if [[ -t 2 ]]; then
+  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m'
+  declare -r CYAN=$'\033[0;36m' NC=$'\033[0m'
+else
+  declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
 # Core message function using FUNCNAME for context
 _msg() {
-  local -- status="${FUNCNAME[1]}" prefix="$SCRIPT_NAME:" msg
-  case "$status" in
+  local -- prefix="$SCRIPT_NAME:" msg
+  case ${FUNCNAME[1]} in
     success) prefix+=" ${GREEN}✓${NC}" ;;
     warn)    prefix+=" ${YELLOW}⚡${NC}" ;;
     info)    prefix+=" ${CYAN}◉${NC}" ;;
@@ -74,42 +77,38 @@ info() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 debug() { ((DEBUG)) || return 0; >&2 _msg "$@"; }
 # Unconditional output
 error() { >&2 _msg "$@"; }
-die() { (($# > 1)) && error "${@:2}"; exit "${1:-0}"; }
-# Utility functions
-decp() { declare -p "$@" | sed 's/^declare -[a-zA-Z-]* //'; }
-trim() { local -- v="$*"; v="${v#"${v%%[![:blank:]]*}"}"; echo -n "${v%"${v##*[![:blank:]]}"}"; }
-
+die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
 # ============================================================================
 # SECURITY AND VALIDATION FUNCTIONS
 # ============================================================================
 # validate_safe_filename: Validate filename for safety against injection attacks
 validate_safe_filename() {
-  local -- filename="$1"
-  local -i allow_path="${2:-0}"  # Allow paths with slashes
+  local -- filename=$1
+  local -i allow_path=${2:-0}  # Allow paths with slashes
 
   # Check for empty filename
   if [[ -z "$filename" ]]; then
-    error "Filename cannot be empty"
+    error 'Filename cannot be empty'
     return 1
   fi
 
   # Check length (255 for filename, longer for full paths)
   local -i max_length=255
   ((allow_path)) && max_length=4096
-  if [[ ${#filename} -gt $max_length ]]; then
+  if ((${#filename} > max_length)); then
     error "Filename too long (max $max_length characters)"
     return 1
   fi
 
   # Check for directory traversal
   if [[ "$filename" =~ \.\. ]]; then
-    error "Directory traversal not allowed in filename"
+    error 'Directory traversal not allowed in filename'
     return 1
   fi
 
   # Check for null bytes
   if [[ "$filename" != "${filename//$'\x00'/}" ]]; then
-    error "Null bytes not allowed in filename"
+    error 'Null bytes not allowed in filename'
     return 1
   fi
 
@@ -117,26 +116,26 @@ validate_safe_filename() {
   if ((allow_path)); then
     # Allow alphanumeric, dots, underscores, hyphens, and forward slashes
     if [[ "$filename" =~ [^a-zA-Z0-9._/-] ]]; then
-      error "Unsafe characters in filename. Only alphanumeric, dots, underscores, hyphens and slashes allowed."
+      error 'Unsafe characters in filename. Only alphanumeric, dots, underscores, hyphens and slashes allowed.'
       return 1
     fi
   else
     # Disallow slashes for pure filenames
     if [[ "$filename" =~ [^a-zA-Z0-9._-] ]]; then
-      error "Unsafe characters in filename. Only alphanumeric, dots, underscores and hyphens allowed."
+      error 'Unsafe characters in filename. Only alphanumeric, dots, underscores and hyphens allowed.'
       return 1
     fi
   fi
 
   # Check for shell metacharacters and other dangerous characters
   if [[ "$filename" =~ [\$\`\(\)\{\}\[\]\<\>\|\&\;\'\"\*\?\\] ]]; then
-    error "Shell metacharacters not allowed in filename"
+    error 'Shell metacharacters not allowed in filename'
     return 1
   fi
 
   # Check for leading dash (could be interpreted as option)
   if [[ "$filename" =~ ^- ]]; then
-    error "Filename cannot start with dash"
+    error 'Filename cannot start with dash'
     return 1
   fi
 
@@ -145,16 +144,16 @@ validate_safe_filename() {
 
 # validate_recording_path: Ensure path is within recording directory
 validate_recording_path() {
-  local -- filepath="$1"
+  local -- filepath=$1
 
   # Get absolute paths for comparison
   local -- abs_path abs_recording_dir
-  abs_path=$(readlink -f "$filepath" 2>/dev/null) || abs_path=$(realpath "$filepath" 2>/dev/null) || abs_path="$filepath"
-  abs_recording_dir=$(readlink -f "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir=$(realpath "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir="$RECORDING_DIR"
+  abs_path=$(realpath -- "$filepath" 2>/dev/null) || abs_path="$filepath"
+  abs_recording_dir=$(realpath -- "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir=$(realpath "$RECORDING_DIR" 2>/dev/null) || abs_recording_dir="$RECORDING_DIR"
 
   # Must be under RECORDING_DIR
   if [[ "$abs_path" != "$abs_recording_dir"/* ]] && [[ "$abs_path" != "$abs_recording_dir" ]]; then
-    error "File must be within recording directory: $RECORDING_DIR"
+    error "File must be within recording directory ${RECORDING_DIR@Q}"
     return 1
   fi
 
@@ -165,11 +164,11 @@ validate_recording_path() {
 # GLOBAL VARIABLES AND CONFIGURATION
 # ============================================================================
 # Configuration variables with defaults
-declare -- RECORDING_DIR="${RECORDING_DIR:-$HOME/Recordings}"
-declare -- STATE_DIR="${STATE_DIR:-$HOME/.vrecord}"
-declare -- DEFAULT_PREFIX="${DEFAULT_PREFIX:-voice_recording}"
-declare -- MP3_BITRATE="${MP3_BITRATE:-192k}"
-declare -- AUDIO_FORMAT="${AUDIO_FORMAT:-pcm_s16le}"
+declare -- RECORDING_DIR=${RECORDING_DIR:-$HOME/Recordings}
+declare -- STATE_DIR=${STATE_DIR:-$HOME/.vrecord}
+declare -- DEFAULT_PREFIX=${DEFAULT_PREFIX:-voice_recording}
+declare -- MP3_BITRATE=${MP3_BITRATE:-192k}
+declare -- AUDIO_FORMAT=${AUDIO_FORMAT:-pcm_s16le}
 declare -i SAMPLE_RATE=${SAMPLE_RATE:-44100}
 declare -i CHANNELS=${CHANNELS:-2}
 declare -i MIN_DISK_SPACE_MB=${MIN_DISK_SPACE_MB:-100}
@@ -182,7 +181,7 @@ declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}   # Seconds between beeps
 declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"  # Path to beep sound
 
 # Directory paths
-declare -- TEMP_DIR=""
+declare -- TEMP_DIR=''
 # State file paths (initialized in init_temp_dir)
 declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE
 # Configuration flags
@@ -192,21 +191,21 @@ declare -i TRANSCRIBE=0  # Transcribe after recording if 1
 
 # Load configuration files
 load_config() {
-  local -- config_file="$1"
+  local -- config_file=$1
   if [[ -f "$config_file" ]]; then
-    debug "Loading config from: $config_file"
+    debug "Loading config from ${config_file@Q}"
     # Source config file in a subshell to validate it first
     if (source "$config_file" 2>/dev/null); then
       source "$config_file"
     else
-      warn "Invalid config file: $config_file"
+      warn "Invalid config file ${config_file@Q}"
     fi
   fi
 }
 
 # Load system and user configs
-load_config "/etc/vrecord/config"
-load_config "$STATE_DIR/config"
+load_config /etc/vrecord/config
+load_config "$STATE_DIR"/config
 
 # Re-apply environment variable overrides after config loading
 RECORDING_DIR="${VRECORD_RECORDING_DIR:-$RECORDING_DIR}"
@@ -215,7 +214,7 @@ DEFAULT_PREFIX="${VRECORD_DEFAULT_PREFIX:-$DEFAULT_PREFIX}"
 MP3_BITRATE="${VRECORD_MP3_BITRATE:-$MP3_BITRATE}"
 
 # Set derived variables
-LOCK_FILE="$STATE_DIR/vrecord.lock"
+LOCK_FILE="$STATE_DIR"/vrecord.lock
 
 # Create directories if they don't exist
 mkdir -p "$RECORDING_DIR" "$STATE_DIR"
@@ -228,19 +227,19 @@ check_dependencies() {
   local -i missing=0
   
   if ! command -v ffmpeg >/dev/null 2>&1; then
-    error "ffmpeg is not installed!"
-    ((missing+=1))
-  elif ! ffmpeg -hide_banner -devices 2>&1 | grep -q "pulse"; then
-    error "ffmpeg does not have PulseAudio support!"
-    ((missing+=1))
+    error 'ffmpeg is not installed!'
+    missing+=1
+  elif ! ffmpeg -hide_banner -devices 2>&1 | grep -q 'pulse'; then
+    error 'ffmpeg does not have PulseAudio support!'
+    missing+=1
   fi
   
   if ! command -v pactl >/dev/null 2>&1; then
-    error "PulseAudio is not installed!"
-    ((missing+=1))
+    error 'PulseAudio is not installed!'
+    missing+=1
   fi
   
-  ((missing == 0)) || die 1 "Missing dependencies. Please install required software."
+  ((missing == 0)) || die 1 'Missing dependencies. Please install required software.'
 }
 
 # ============================================================================
@@ -248,43 +247,46 @@ check_dependencies() {
 # ============================================================================
 # acquire_lock: Obtain exclusive lock to prevent concurrent instances
 acquire_lock() {
-  local -i timeout="${1:-5}"
+  local -i timeout=${1:-5}
   
   # Ensure lock directory exists
-  local -- lock_dir=$(dirname "$LOCK_FILE")
+  local -- lock_dir=${LOCK_FILE%/*}
   [[ -d "$lock_dir" ]] || mkdir -p "$lock_dir" || {
-    error "Cannot create lock directory: $lock_dir"
+    error "Cannot create lock directory ${lock_dir@Q}"
     return 1
   }
   
   if command -v flock >/dev/null 2>&1; then
-    # Use flock for atomic locking
-    debug "Using flock for lock management"
+    # Use flock for atomic locking via file descriptor
+    debug 'Using flock for lock management'
 
-    # Create lock file if it doesn't exist
-    touch "$LOCK_FILE" 2>/dev/null || {
-      error "Cannot create lock file: $LOCK_FILE"
+    # Open file descriptor 9 for the lock file
+    exec 9>"$LOCK_FILE" || {
+      error "Cannot open lock file ${LOCK_FILE@Q}"
       return 1
     }
 
     # Try to acquire exclusive lock with timeout
-    if flock -n -E 1 -w "$timeout" "$LOCK_FILE" -c "echo $$ > '$LOCK_FILE'"; then
-      debug "Lock acquired using flock"
+    if flock -n -w "$timeout" 9; then
+      # Write PID to lock file for debugging/stale detection
+      echo $$ > "$LOCK_FILE"
+      debug 'Lock acquired using flock'
       return 0
     else
+      exec 9>&-  # Close file descriptor on failure
       error "Another instance is running (timeout after ${timeout}s)"
       return 1
     fi
   else
     # Fallback: Use atomic file operations
-    debug "Using atomic file operations for lock management"
+    debug 'Using atomic file operations for lock management'
 
     local -- temp_lock="$LOCK_FILE.$$"
     local -i elapsed=0
 
     # Write PID to temp file
     echo $$ > "$temp_lock" 2>/dev/null || {
-      error "Cannot create temporary lock file"
+      error 'Cannot create temporary lock file'
       return 1
     }
 
@@ -292,7 +294,7 @@ acquire_lock() {
     while ((elapsed < timeout)); do
       # Try atomic move (only succeeds if target doesn't exist)
       if mv -n "$temp_lock" "$LOCK_FILE" 2>/dev/null; then
-        debug "Lock acquired using atomic move"
+        debug 'Lock acquired using atomic move'
         return 0
       fi
 
@@ -306,14 +308,14 @@ acquire_lock() {
         continue
       fi
 
-      sleep 0.5
-      ((elapsed+=1))
+      sleep 1
+      elapsed+=1
     done
 
     # Cleanup temp file
     rm -f "$temp_lock"
 
-    error "Another instance is running (PID: $(cat "$LOCK_FILE" 2>/dev/null || echo "unknown"))"
+    error "Another instance is running (PID: $(cat "$LOCK_FILE" 2>/dev/null || echo 'unknown'))"
     return 1
   fi
 }
@@ -323,24 +325,10 @@ release_lock() {
     local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
     if [[ "$lock_pid" == "$$" ]]; then
       rm -f "$LOCK_FILE"
-      debug "Lock released"
+      debug 'Lock released'
     else
       warn "Not releasing lock - owned by different process (PID: $lock_pid)"
     fi
-  fi
-}
-
-# validate_lock: Check if a valid lock exists
-validate_lock() {
-  if [[ -f "$LOCK_FILE" ]]; then
-    local -- lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
-    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-      return 0  # Valid lock exists
-    else
-      return 1  # Stale lock
-    fi
-  else
-    return 1  # No lock
   fi
 }
 
@@ -352,10 +340,10 @@ cleanup_on_exit() {
   local -- exit_code=$?
   
   # If we have an active recording PID, try to save it gracefully
-  if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR/ffmpeg.pid" ]]; then
-    local -- pid=$(cat "$TEMP_DIR/ffmpeg.pid" 2>/dev/null)
+  if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR"/ffmpeg.pid ]]; then
+    local -- pid=$(cat "$TEMP_DIR"/ffmpeg.pid 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      warn "Recording continues in background"
+      warn 'Recording continues in background'
       warn "Use '$SCRIPT_NAME stop' to stop recording"
     fi
   fi
@@ -363,7 +351,7 @@ cleanup_on_exit() {
   release_lock
   
   # Only clean up temp dir if no active recording
-  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]] && [[ ! -f "$TEMP_DIR/ffmpeg.pid" ]]; then
+  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]] && [[ ! -f "$TEMP_DIR"/ffmpeg.pid ]]; then
     rm -rf "$TEMP_DIR"
   fi
   
@@ -387,23 +375,23 @@ trap 'handle_signal TERM' TERM
 # ============================================================================
 # get_recording_dir: Retrieve the temporary directory for current recording
 get_recording_dir() {
-  local -- current_recording="$STATE_DIR/current_recording"
+  local -- current_recording="$STATE_DIR"/current_recording
   if [[ -f "$current_recording" ]]; then
     cat "$current_recording"
   else
-    echo ""
+    echo
   fi
 }
 
 # Function to set current recording temp dir
 set_recording_dir() {
-  local -- dir="$1"
-  echo "$dir" > "$STATE_DIR/current_recording"
+  local -- dir=$1
+  echo "$dir" > "$STATE_DIR"/current_recording
 }
 
 # Function to clear current recording
 clear_recording_dir() {
-  rm -f "$STATE_DIR/current_recording"
+  rm -f "$STATE_DIR"/current_recording
 }
 
 # init_temp_dir: Initialize or retrieve temporary directory for recording
@@ -429,7 +417,7 @@ init_temp_dir() {
 # ============================================================================
 # check_disk_space: Verify sufficient disk space for recording
 check_disk_space() {
-  local -- path="$1"
+  local -- path=$1
   local -i required_mb="${2:-$MIN_DISK_SPACE_MB}"  # Use configured minimum
   
   local -i available_mb=$(df -BM "$path" | awk 'NR==2 {print $4}' | sed 's/M//')
@@ -447,7 +435,7 @@ get_timestamp() { date +"%Y%m%d_%H%M%S"; }
 
 # list_recordings: Display WAV files or all files in recordings directory
 list_recordings() {
-  local -i show_all="${1:-0}"
+  local -i show_all=${1:-0}
   
   if ((show_all)); then
     printf '%s\n' "All files in $RECORDING_DIR:"
@@ -470,7 +458,7 @@ list_recordings() {
         date=$(stat -c %y "$file" | cut -d' ' -f1,2 | cut -d'.' -f1)
         ext="${basename##*.}"
         printf "%2d. %-40s [%s] %-8s %s\n" "$count" "$basename" "$size" "[$ext]" "$date"
-        ((count+=1))
+        count+=1
       fi
     done
   else
@@ -482,7 +470,7 @@ list_recordings() {
         size=$(du -h "$file" | cut -f1)
         date=$(stat -c %y "$file" | cut -d' ' -f1,2 | cut -d'.' -f1)
         printf "%2d. %-40s [%s] %s\n" "$count" "$basename" "$size" "$date"
-        ((count+=1))
+        count+=1
       done
     fi
   fi
@@ -499,7 +487,7 @@ list_recordings() {
 
 # validate_ffmpeg_process: Check if PID is a running ffmpeg process
 validate_ffmpeg_process() {
-  local -- pid="$1"
+  local -- pid=$1
   
   # Check if process exists
   if ! kill -0 "$pid" 2>/dev/null; then
@@ -508,7 +496,7 @@ validate_ffmpeg_process() {
   
   # Check if it's actually ffmpeg
   local -- cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
-  if [[ "$cmd" != "ffmpeg" ]]; then
+  if [[ "$cmd" != ffmpeg ]]; then
     return 1
   fi
   
@@ -523,7 +511,7 @@ get_last_recording() {
   if [[ -n "$last_file" && -f "$last_file" ]]; then
     echo "$last_file"
   else
-    echo ""
+    echo
   fi
 }
 
@@ -532,7 +520,7 @@ get_last_recording() {
 # ============================================================================
 # rotate_log: Rotate log file if it exceeds size limit
 rotate_log() {
-  local -- log_file="$1"
+  local -- log_file=$1
   local -i max_size_bytes=$((LOG_MAX_SIZE_MB * 1024 * 1024))
   
   # Check if log file exists and size
@@ -571,7 +559,7 @@ clean_old_logs() {
   # Skip if STATE_DIR doesn't exist
   [[ -d "$STATE_DIR" ]] || return 0
   
-  local -- log_dir="$STATE_DIR/logs"
+  local -- log_dir="$STATE_DIR"/logs
   
   if [[ -d "$log_dir" ]]; then
     # Find and remove log files older than 30 days
@@ -579,15 +567,15 @@ clean_old_logs() {
   fi
   
   # Clean up old temporary directories
-  find "$STATE_DIR" -name "vrecord.*" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+  find "$STATE_DIR" -name 'vrecord.*' -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 }
 
 # check_log_before_write: Check and rotate log before writing
 check_log_before_write() {
-  local -- log_file="$1"
+  local -- log_file=$1
   
   # Create log directory if needed
-  local -- log_dir=$(dirname "$log_file")
+  local -- log_dir=${log_file%/*}
   [[ -d "$log_dir" ]] || mkdir -p "$log_dir"
   
   # Rotate if needed
@@ -600,36 +588,38 @@ check_log_before_write() {
 # beep_loop: Background process that plays beeps while recording
 beep_loop() {
   # Check if beep is enabled
-  ((BEEP_ENABLED == 0 || NO_BEEP == 1)) && return 0
+  if ((BEEP_ENABLED == 0 || NO_BEEP == 1)); then
+    return 0
+  fi
   
   # Search for beep file in multiple locations
-  local -- beep_locations=(
+  local -a beep_locations=(
     "$BEEP_FILE"  # User configured location
-    "$STATE_DIR/beep.mp3"  # User's state directory
-    "/usr/local/share/vrecord/beep.mp3"  # System installation
-    "/usr/share/vrecord/beep.mp3"  # Alternative system location
-    "$(dirname "$SCRIPT_PATH")/beep.mp3"  # Same directory as script
+    "$STATE_DIR"/beep.mp3  # User's state directory
+    /usr/local/share/vrecord/beep.mp3  # System installation
+    /usr/share/vrecord/beep.mp3  # Alternative system location
+    "${SCRIPT_PATH%/*}"/beep.mp3  # Same directory as script
   )
 
-  local -- found=0
+  local -i found=0
   local -- location
   for location in "${beep_locations[@]}"; do
     if [[ -f "$location" ]]; then
       BEEP_FILE="$location"
       found=1
-      debug "Using beep file: $BEEP_FILE"
+      debug "Using beep file ${BEEP_FILE@Q}"
       break
     fi
   done
 
   if ((found == 0)); then
-    debug "Beep file not found in any standard location"
+    debug 'Beep file not found in any standard location'
     return 0
   fi
   
   # Check if ffplay is available
   if ! command -v ffplay >/dev/null 2>&1; then
-    debug "ffplay not found, beep notifications disabled"
+    debug 'ffplay not found, beep notifications disabled'
     return 0
   fi
   
@@ -637,8 +627,8 @@ beep_loop() {
   while true; do
     # Check if we should continue (recording state)
     if [[ -f "$STATE_FILE" ]]; then
-      local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
-      if [[ "$state" != "recording" ]]; then
+      local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
+      if [[ "$state" != recording ]]; then
         # Not recording, wait and check again
         sleep 5
         continue
@@ -659,7 +649,9 @@ beep_loop() {
 # start_beep_process: Start the beep notification background process
 start_beep_process() {
   # Check if beep is enabled
-  ((BEEP_ENABLED == 0 || NO_BEEP == 1)) && return 0
+  if ((BEEP_ENABLED == 0 || NO_BEEP == 1)); then
+    return 0
+  fi
   
   # Check if already running
   if [[ -f "$BEEP_PID_FILE" ]]; then
@@ -694,9 +686,9 @@ stop_beep_process() {
 # ============================================================================
 # start_recording: Start a new recording or resume an existing one
 start_recording() {
-  local -- filename_prefix="${1:-$DEFAULT_PREFIX}"
-  local -- resume_file="${2:-}"
-  local -i continue_last="${3:-0}"
+  local -- filename_prefix=${1:-$DEFAULT_PREFIX}
+  local -- resume_file=${2:-}
+  local -i continue_last=${3:-0}
   
   # Validate filename prefix if provided and not using continue/resume
   if [[ -n "$filename_prefix" ]] && [[ "$filename_prefix" != "$DEFAULT_PREFIX" ]] && \
@@ -724,19 +716,19 @@ start_recording() {
 
   # Check if directory is writable
   if ! touch "$RECORDING_DIR/.test" 2>/dev/null; then
-    error "Recording directory is not writable: $RECORDING_DIR"
+    error "Recording directory is not writable ${RECORDING_DIR@Q}"
     return 1
   fi
-  rm -f "$RECORDING_DIR/.test"
+  rm -f "$RECORDING_DIR"/.test
 
   # Handle continue-last flag
   if ((continue_last)); then
     resume_file=$(get_last_recording)
     if [[ -z "$resume_file" ]]; then
-      error "No recordings found to continue!"
+      error 'No recordings found to continue!'
       return 1
     fi
-    info "Continuing last recording: $(basename "$resume_file")"
+    info "Continuing last recording '$(basename "$resume_file")'"
   fi
   
   # Check if we're resuming an existing file
@@ -755,7 +747,7 @@ start_recording() {
         return 1
       fi
     else
-      error "File '$resume_file' not found!" \
+      error "File ${resume_file@Q} not found!" \
             "Use 'list' command to see available recordings."
       return 1
     fi
@@ -767,7 +759,7 @@ start_recording() {
       error 'Recording is already in progress!'
       return 1
     else
-      warn "Found stale PID file, cleaning up..."
+      warn 'Found stale PID file, cleaning up...'
       rm -f "$PID_FILE"
     fi
   fi
@@ -775,7 +767,7 @@ start_recording() {
   if [[ -n "$resume_file" ]]; then
     # Resuming existing recording
     output_file="$resume_file"
-    info "Resuming recording: $(basename "$output_file")" \
+    info "Resuming recording '$(basename "$output_file")'" \
          "Original file size: $(du -h "$output_file" | cut -f1)"
 
     # Store the main file path for later merging
@@ -783,23 +775,23 @@ start_recording() {
 
     # Get or initialize segment count
     local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
-    ((segment_count+=1))
-    local segment_file="$SEGMENTS_DIR/segment_${segment_count}.wav"
+    segment_count+=1
+    local segment_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
 
-    info "Recording new segment: $segment_file"
+    info "Recording new segment ${segment_file@Q}"
 
     # Start recording the new segment
-    local -- log_file="$TEMP_DIR/ffmpeg.log"
+    local -- log_file="$TEMP_DIR"/ffmpeg.log
     check_log_before_write "$log_file"
     ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$segment_file" \
            </dev/null >/dev/null 2>>"$log_file" &
 
     echo "$segment_count" > "$SEGMENT_COUNT_FILE"
-    echo "$segment_file" > "$TEMP_DIR/current_file"
+    echo "$segment_file" > "$TEMP_DIR"/current_file
     
     # Save transcribe flag if set
     if ((TRANSCRIBE == 1)); then
-      echo "1" > "$TRANSCRIBE_FILE"
+      echo '1' > "$TRANSCRIBE_FILE"
     fi
 
   else
@@ -809,10 +801,10 @@ start_recording() {
     filename_prefix="${filename_prefix%_}"
     output_file="$RECORDING_DIR/${filename_prefix}_$timestamp.wav"
     info 'Starting new recording...' \
-         "Output file: $output_file"
+         "Output file ${output_file@Q}"
 
     # Start ffmpeg for new recording
-    local -- log_file="$TEMP_DIR/ffmpeg.log"
+    local -- log_file="$TEMP_DIR"/ffmpeg.log
     check_log_before_write "$log_file"
     ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$output_file" \
            </dev/null >/dev/null 2>>"$log_file" &
@@ -824,7 +816,7 @@ start_recording() {
     
     # Save transcribe flag if set
     if ((TRANSCRIBE == 1)); then
-      echo "1" > "$TRANSCRIBE_FILE"
+      echo '1' > "$TRANSCRIBE_FILE"
     fi
   fi
 
@@ -860,7 +852,7 @@ pause_recording() {
   [[ -f "$PID_FILE" ]] || { error 'No active recording found!'; release_lock; return 1; }
 
   local -- pid=$(cat "$PID_FILE")
-  local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+  local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
 
   if [[ "$state" == paused ]]; then
     error 'Recording is already paused!'
@@ -924,38 +916,38 @@ resume_recording() {
 
 # merge_segments: Concatenate recorded segments with the original file
 merge_segments() {
-  local main_file="$1"
-  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+  local main_file=$1
+  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
   
-  ((segment_count == 0)) && return 0  # No segments to merge
+  ((segment_count)) || return 0  # No segments to merge
 
   info 'Merging segments with original recording...'
 
   # Create concat demuxer input file for ffmpeg
   # Format: each line contains "file '/path/to/file.wav'"
-  local -- filelist="$TEMP_DIR/filelist.txt"
+  local -- filelist="$TEMP_DIR"/filelist.txt
   echo "file '$main_file'" > "$filelist"
 
   # Add all segments to the list
   local -i i
   local -- segment_file
   for ((i=1; i<=segment_count; i+=1)); do
-    segment_file="$SEGMENTS_DIR/segment_${i}.wav"
+    segment_file="$SEGMENTS_DIR"/segment_"$i".wav
     if [[ -f "$segment_file" ]]; then
-      echo "file '$segment_file'" >> "$filelist"
+      echo "file ${segment_file@Q}" >> "$filelist"
     fi
   done
 
   # Create merged file
   local -- temp_merged="$TEMP_DIR"/merged_$(basename "$main_file")
 
-  local -- log_file="$TEMP_DIR/merge.log"
+  local -- log_file="$TEMP_DIR"/merge.log
   check_log_before_write "$log_file"
   if ffmpeg -f concat -safe 0 -i "$filelist" -c copy "$temp_merged" -y \
             </dev/null >/dev/null 2>>"$log_file"; then
     # Replace original with merged version
     mv "$temp_merged" "$main_file"
-    info "Successfully merged segments into: $main_file"
+    info "Successfully merged segments into ${main_file@Q}"
 
     # Clean up segment files
     rm -f "$SEGMENTS_DIR"/segment_*.wav
@@ -981,9 +973,9 @@ stop_recording() {
   fi
 
   local -- pid=$(cat "$PID_FILE")
-  local -- main_file=$(cat "$TEMP_DIR/main_file" 2>/dev/null)
-  local -- current_file=$(cat "$TEMP_DIR/current_file" 2>/dev/null)
-  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+  local -- main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null)
+  local -- current_file=$(cat "$TEMP_DIR"/current_file 2>/dev/null)
+  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
 
   if validate_ffmpeg_process "$pid"; then
     info 'Stopping recording...'
@@ -993,7 +985,7 @@ stop_recording() {
 
     # Resume if paused before stopping
     # This ensures we get a clean shutdown of the recording
-    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
     if [[ "$state" == "paused" ]]; then
       kill -CONT "$pid" 2>/dev/null
       sleep 0.5  # Allow process to resume
@@ -1006,7 +998,7 @@ stop_recording() {
     local -i wait_count=0
     while kill -0 "$pid" 2>/dev/null && ((wait_count < 20)); do
       sleep 0.5
-      ((wait_count+=1))
+      wait_count+=1
     done
 
     if kill -0 "$pid" 2>/dev/null; then
@@ -1022,7 +1014,7 @@ stop_recording() {
     fi
 
     if [[ -n "$main_file" && -f "$main_file" ]]; then
-      info "Recording saved to: $main_file"
+      info "Recording saved to ${main_file@Q}"
 
       # Show file info
       if command -v mediainfo >/dev/null 2>&1; then
@@ -1047,17 +1039,17 @@ stop_recording() {
 
 # convert_to_mp3: Convert WAV recording to MP3 format
 convert_to_mp3() {
-  local -- wav_file="$1"
-  local -- mp3_file="${wav_file%.wav}.mp3"
+  local -- wav_file=$1
+  local -- mp3_file="${wav_file%.wav}".mp3
   
   if ! command -v ffmpeg >/dev/null 2>&1; then
     warn "ffmpeg not found, skipping MP3 conversion"
     return 1
   fi
   
-  info "Converting to MP3: $(basename "$mp3_file")"
+  info "Converting to MP3: $(basename -- "$mp3_file")"
   
-  local -- log_file="$TEMP_DIR/mp3_convert.log"
+  local -- log_file="$TEMP_DIR"/mp3_convert.log
   check_log_before_write "$log_file"
   if ffmpeg -y -i "$wav_file" -codec:a libmp3lame -b:a "$MP3_BITRATE" "$mp3_file" \
             </dev/null >/dev/null 2>>"$log_file"; then
@@ -1071,16 +1063,16 @@ convert_to_mp3() {
       if command -v transcribe >/dev/null 2>&1; then
         info "Running transcription on: $(basename "$mp3_file")"
         if transcribe "$mp3_file"; then
-          success "Transcription completed"
+          success 'Transcription completed'
         else
-          warn "Transcription failed"
+          warn 'Transcription failed'
         fi
       else
-        warn "Transcribe command not found, skipping transcription"
+        warn 'Transcribe command not found, skipping transcription'
       fi
     fi
   else
-    error "Failed to convert to MP3" \
+    error 'Failed to convert to MP3' \
           "Check $TEMP_DIR/mp3_convert.log for details"
     return 1
   fi
@@ -1092,10 +1084,10 @@ show_status() {
   
   if [[ -f "$PID_FILE" ]]; then
     local -- pid=$(cat "$PID_FILE")
-    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
-    local -- main_file=$(cat "$TEMP_DIR/main_file" 2>/dev/null)
-    local -- current_file=$(cat "$TEMP_DIR/current_file" 2>/dev/null)
-    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
+    local -- main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null)
+    local -- current_file=$(cat "$TEMP_DIR"/current_file 2>/dev/null)
+    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
 
     if validate_ffmpeg_process "$pid"; then
       info "Recording Status: $state" \
@@ -1114,9 +1106,9 @@ show_status() {
       fi
       
       # Check for errors in log
-      if [[ -f "$TEMP_DIR/ffmpeg.log" ]] && [[ -s "$TEMP_DIR/ffmpeg.log" ]]; then
-        local -- last_error=$(tail -n 5 "$TEMP_DIR/ffmpeg.log" 2>/dev/null | grep -i error | tail -n 1)
-        [[ -n "$last_error" ]] && warn "Recent error: $last_error"
+      if [[ -f "$TEMP_DIR"/ffmpeg.log ]] && [[ -s "$TEMP_DIR"/ffmpeg.log ]]; then
+        local -- last_error=$(tail -n 5 "$TEMP_DIR"/ffmpeg.log 2>/dev/null | grep -i error | tail -n 1)
+        [[ -z "$last_error" ]] || warn "Recent error: $last_error"
       fi
     else
       error 'No active recording (stale PID file found)'
@@ -1143,7 +1135,7 @@ cleanup_files() {
 
 # show_help: Display usage information and exit
 show_help() {
-  cat <<EOT
+  cat <<HELP
 Voice Recorder with Resume Capability
 
 Usage: $SCRIPT_NAME [global-options] <command> [command-options]
@@ -1187,7 +1179,7 @@ State files are saved to: $STATE_DIR
 Note: Recording continues even if you exit this script.
       Use '$SCRIPT_NAME status' to check and '$SCRIPT_NAME stop' to end recording.
 
-EOT
+HELP
   exit 0
 }
 
@@ -1201,10 +1193,10 @@ parse_args() {
   local -- command=''
 
   # Standard argument parsing pattern
-  while (($#)); do case "$1" in
+  while (($#)); do case $1 in
     -n|--no-mp3)     NO_MP3=1 ;;
     -b|--no-beep)    NO_BEEP=1 ;;
-    -v|--verbose)    ((VERBOSE+=1)) ;;
+    -v|--verbose)    VERBOSE+=1 ;;
     -q|--quiet)      VERBOSE=0 ;;
     -h|--help|help)  show_help ;;
     -V|--version)    echo "$SCRIPT_NAME $VERSION"
@@ -1215,30 +1207,30 @@ This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
 EOF
                      exit 0 ;;
-    -[nbvqhV]*)      #shellcheck disable=SC2046 #split up single options
-                     set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}" ;;
+    -[nbvqhV]?*)     set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
+
     -*)
       # Unknown option - save for command processing
       args+=("$1") ;;
     *)
       # This is the command or a command argument
       if [[ -z "$command" ]]; then
-        command="$1"
+        command=$1
       else
         args+=("$1")
       fi ;;
   esac; shift; done
 
   # If no command given, show help
-  [[ -z "$command" ]] && show_help
+  [[ -n "$command" ]] || show_help
 
   # Process the command with remaining arguments
-  process_command "$command" "${args[@]}"
+  process_command "$command" ${args[@]+"${args[@]}"}
 }
 
 # process_command: Execute the requested command with its arguments
 process_command() {
-  local -- command="$1"
+  local -- command=$1
   shift
   
   case "$command" in
@@ -1249,36 +1241,36 @@ process_command() {
 
       # Parse start command options
       while (($#)); do
- case "$1" in
-        -c|--continue-last)
-          continue_last=1 ;;
-        -r|--resume)
-          [[ -z "${2:-}" ]] && die 2 "--resume requires a filename"
-          resume_file="$2"
-          # Validate resume filename
-          validate_safe_filename "$resume_file" 1 || die 2 "Invalid resume filename"
-          shift ;;
-        -t|--transcribe)
-          TRANSCRIBE=1 ;;
-        -*)
-          die 2 "Unknown option for start: '$1'" ;;
-        *)
-          # This is the prefix
-          [[ -z "$prefix" ]] || die 2 "Too many arguments for start command"
-          prefix="$1"
-          # Validate prefix
-          validate_safe_filename "$prefix" 0 || die 2 "Invalid filename prefix" ;;
+        case "$1" in
+          -c|--continue-last)
+            continue_last=1 ;;
+          -r|--resume)
+            [[ -n "${2:-}" ]] || die 2 '--resume requires a filename'
+            resume_file=$2
+            # Validate resume filename
+            validate_safe_filename "$resume_file" 1 || die 2 'Invalid resume filename'
+            shift ;;
+          -t|--transcribe)
+            TRANSCRIBE=1 ;;
+          -*)
+            die 2 "Unknown option for start: ${1@Q}" ;;
+          *)
+            # This is the prefix
+            [[ -z "$prefix" ]] || die 2 'Too many arguments for start command'
+            prefix="$1"
+            # Validate prefix
+            validate_safe_filename "$prefix" 0 || die 2 'Invalid filename prefix' ;;
       esac; shift; done
       
       # Validate conflicting options
       if ((continue_last)) && [[ -n "$resume_file" ]]; then
-        die 2 "Cannot use both --continue-last and --resume"
+        die 2 'Cannot use both --continue-last and --resume'
       fi
       
       # Validation: prefix not allowed with continue/resume
       # When continuing/resuming, the filename is already determined
       if [[ -n "$prefix" ]] && { ((continue_last)) || [[ -n "$resume_file" ]]; }; then
-        die 2 "Cannot specify filename prefix when continuing/resuming a recording"
+        die 2 'Cannot specify filename prefix when continuing/resuming a recording'
       fi
       
       start_recording "$prefix" "$resume_file" "$continue_last"
@@ -1291,10 +1283,10 @@ process_command() {
       ;;
     stop)
       # Parse stop command options
-      while (($#)); do case "$1" in
+      while (($#)); do case $1 in
         -t|--transcribe)  TRANSCRIBE=1 ;;
-        -*)               die 2 "Unknown option for stop: '$1'" ;;
-        *)                die 2 "Unexpected argument for stop: '$1'" ;;
+        -*)               die 2 "Unknown option for stop: ${1@Q}" ;;
+        *)                die 2 "Unexpected argument for stop: ${1@Q}" ;;
       esac; shift; done
       stop_recording
       ;;
@@ -1305,16 +1297,16 @@ process_command() {
       local -i show_all=0
       
       # Parse list options
-      while (($#)); do case "$1" in
+      while (($#)); do case $1 in
         --all)  show_all=1 ;;
-        -*)     die 2 "Unknown option for list: '$1'" ;;
-        *)      die 2 "Unknown argument for list: '$1'" ;;
+        -*)     die 2 "Unknown option for list: ${1@Q}" ;;
+        *)      die 2 "Unknown argument for list: ${1@Q}" ;;
       esac; shift; done
       
       list_recordings "$show_all"
       ;;
     *)
-      die 2 "Unknown command: '$command'. Use '$SCRIPT_NAME help' for usage."
+      die 2 "Unknown command ${command@Q}. Use '$SCRIPT_NAME help' for usage."
       ;;
   esac
 }
