@@ -1,58 +1,34 @@
 #!/usr/bin/env bash
 #shellcheck disable=SC2155,SC1090,SC1091,SC2119,SC2120,SC2034
 # vrecord - Voice Recorder with Resume Capability
-# Copyright (C) 2024 Generated with Claude Code
+# Copyright (C) 2024-2025 Open Technology Foundation
+# License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Command-line voice recorder for Linux with:
+#   - Pause/resume via SIGSTOP/SIGCONT signals
+#   - Continue/append to existing WAV recordings
+#   - Automatic MP3 conversion (libmp3lame)
+#   - Optional transcription integration
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-#
-# Description:
-# A robust voice recording script that supports pause/resume functionality,
-# automatic MP3 conversion, and the ability to continue previous recordings.
-#
-# Features:
-#   - Record audio from default PulseAudio input device
-#   - Pause and resume recordings in progress
-#   - Continue/append to existing recordings
-#   - Automatic MP3 conversion with optional bypass
-#   - Persistent state across script invocations
-#   - Lock file mechanism to prevent concurrent instances
-#
-# Usage: vrecord [global-options] <command> [command-options]
-#
-# Dependencies: ffmpeg (with PulseAudio support), PulseAudio
-# Optional: mediainfo (for detailed file information)
-#
-# Author: Generated with Claude Code
-# License: GPL-3.0-or-later
+# Dependencies: ffmpeg (PulseAudio), pactl | Optional: mediainfo, transcribe
 #
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Script metadata
-declare -r VERSION='1.0.0'
+declare -r VERSION=1.0.0
+#shellcheck disable=SC2155
 declare -r SCRIPT_PATH=$(realpath -- "$0")
 declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # ============================================================================
-# LOGGING AND UTILITY FUNCTIONS
+# LOGGING AND OUTPUT
+# Provides colored, level-based messaging (info/warn/error/debug/success)
 # ============================================================================
-# Verbosity control
 declare -i VERBOSE=1 DEBUG=0
 # Standard colours
 if [[ -t 2 ]]; then
-  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m'
-  declare -r CYAN=$'\033[0;36m' NC=$'\033[0m'
+  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
 else
   declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
 fi
@@ -78,10 +54,15 @@ debug() { ((DEBUG)) || return 0; >&2 _msg "$@"; }
 # Unconditional output
 error() { >&2 _msg "$@"; }
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
+
 # ============================================================================
-# SECURITY AND VALIDATION FUNCTIONS
+# SECURITY AND VALIDATION
+# Input sanitization to prevent path traversal, injection, and shell exploits
 # ============================================================================
-# validate_safe_filename: Validate filename for safety against injection attacks
+
+# validate_safe_filename: Reject filenames with dangerous characters or patterns
+# Rules: alphanumeric, dots, underscores, hyphens only; no leading dash; no ..
+# Args: $1=filename, $2=allow_path (0=filename only, 1=allow /)
 validate_safe_filename() {
   local -- filename=$1
   local -i allow_path=${2:-0}  # Allow paths with slashes
@@ -94,7 +75,7 @@ validate_safe_filename() {
 
   # Check length (255 for filename, longer for full paths)
   local -i max_length=255
-  ((allow_path)) && max_length=4096
+  ((allow_path==0)) || max_length=4096
   if ((${#filename} > max_length)); then
     error "Filename too long (max $max_length characters)"
     return 1
@@ -142,7 +123,8 @@ validate_safe_filename() {
   return 0
 }
 
-# validate_recording_path: Ensure path is within recording directory
+# validate_recording_path: Ensure file path is within RECORDING_DIR
+# Prevents directory traversal attacks by comparing canonical paths
 validate_recording_path() {
   local -- filepath=$1
 
@@ -161,40 +143,42 @@ validate_recording_path() {
 }
 
 # ============================================================================
-# GLOBAL VARIABLES AND CONFIGURATION
+# CONFIGURATION
+# Settings with defaults; overridden by config files, then VRECORD_* env vars
 # ============================================================================
-# Configuration variables with defaults
-declare -- RECORDING_DIR=${RECORDING_DIR:-$HOME/Recordings}
-declare -- STATE_DIR=${STATE_DIR:-$HOME/.vrecord}
-declare -- DEFAULT_PREFIX=${DEFAULT_PREFIX:-voice_recording}
-declare -- MP3_BITRATE=${MP3_BITRATE:-192k}
-declare -- AUDIO_FORMAT=${AUDIO_FORMAT:-pcm_s16le}
-declare -i SAMPLE_RATE=${SAMPLE_RATE:-44100}
-declare -i CHANNELS=${CHANNELS:-2}
-declare -i MIN_DISK_SPACE_MB=${MIN_DISK_SPACE_MB:-100}
-declare -i LOG_MAX_SIZE_MB=${LOG_MAX_SIZE_MB:-10}
-declare -i LOG_MAX_FILES=${LOG_MAX_FILES:-5}
 
-# Beep notification settings
-declare -i BEEP_ENABLED=${BEEP_ENABLED:-1}      # Enable beep notifications
-declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}   # Seconds between beeps
-declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"  # Path to beep sound
+# Recording parameters - directory paths and audio settings
+declare -- RECORDING_DIR=${RECORDING_DIR:-$HOME/Recordings}  # Where WAV/MP3 files are saved
+declare -- STATE_DIR=${STATE_DIR:-$HOME/.vrecord}            # Persistent state (config, beep.mp3)
+declare -- DEFAULT_PREFIX=${DEFAULT_PREFIX:-voice_recording} # Filename prefix when none specified
+declare -- MP3_BITRATE=${MP3_BITRATE:-192k}                  # libmp3lame bitrate
+declare -- AUDIO_FORMAT=${AUDIO_FORMAT:-pcm_s16le}           # WAV codec (16-bit PCM)
+declare -i SAMPLE_RATE=${SAMPLE_RATE:-44100}                 # Audio sample rate (Hz)
+declare -i CHANNELS=${CHANNELS:-2}                           # Mono (1) or stereo (2)
+declare -i MIN_DISK_SPACE_MB=${MIN_DISK_SPACE_MB:-100}       # Minimum free space to start
+declare -i LOG_MAX_SIZE_MB=${LOG_MAX_SIZE_MB:-10}            # Rotate logs when exceeded
+declare -i LOG_MAX_FILES=${LOG_MAX_FILES:-5}                 # Keep N rotated log files
 
-# Directory paths
-declare -- TEMP_DIR=''
-# State file paths (initialized in init_temp_dir)
+# Beep notifications - periodic audio reminder during recording
+declare -i BEEP_ENABLED=${BEEP_ENABLED:-1}                   # 1=enabled, 0=disabled
+declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}                # Seconds between beeps
+declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"     # Sound file path
+
+# Runtime state - initialized during execution
+declare -- TEMP_DIR=''  # Session temp dir: /tmp/vrecord.XXXXXX
 declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE
-# Configuration flags
-declare -i NO_MP3=0  # Skip MP3 conversion if 1
-declare -i NO_BEEP=0  # Skip beep notifications if 1
-declare -i TRANSCRIBE=0  # Transcribe after recording if 1
 
-# Load configuration files
+# Command-line flags - set by option parsing
+declare -i NO_MP3=0      # --no-mp3: skip MP3 conversion
+declare -i NO_BEEP=0     # --no-beep: suppress beep notifications
+declare -i TRANSCRIBE=0  # --transcribe: run transcription after MP3
+
+# load_config: Source a config file if it exists and is valid
 load_config() {
   local -- config_file=$1
   if [[ -f "$config_file" ]]; then
     debug "Loading config from ${config_file@Q}"
-    # Source config file in a subshell to validate it first
+    # Validate syntax in subshell before sourcing
     if (source "$config_file" 2>/dev/null); then
       source "$config_file"
     else
@@ -203,26 +187,30 @@ load_config() {
   fi
 }
 
-# Load system and user configs
+# Configuration precedence (highest to lowest):
+#   1. VRECORD_* environment variables
+#   2. User config: ~/.vrecord/config
+#   3. System config: /etc/vrecord/config
+#   4. Built-in defaults (above)
 load_config /etc/vrecord/config
 load_config "$STATE_DIR"/config
 
-# Re-apply environment variable overrides after config loading
+# Environment variable overrides (VRECORD_* prefix)
 RECORDING_DIR="${VRECORD_RECORDING_DIR:-$RECORDING_DIR}"
 STATE_DIR="${VRECORD_STATE_DIR:-$STATE_DIR}"
 DEFAULT_PREFIX="${VRECORD_DEFAULT_PREFIX:-$DEFAULT_PREFIX}"
 MP3_BITRATE="${VRECORD_MP3_BITRATE:-$MP3_BITRATE}"
 
-# Set derived variables
+# Derived paths
 LOCK_FILE="$STATE_DIR"/vrecord.lock
 
 # Create directories if they don't exist
 mkdir -p "$RECORDING_DIR" "$STATE_DIR"
 
 # ============================================================================
-# DEPENDENCY AND ENVIRONMENT CHECKS
+# DEPENDENCY CHECKS
+# Verify required tools (ffmpeg with PulseAudio, pactl) are available
 # ============================================================================
-# check_dependencies: Verify required tools are installed
 check_dependencies() {
   local -i missing=0
   
@@ -244,8 +232,13 @@ check_dependencies() {
 
 # ============================================================================
 # LOCK FILE MANAGEMENT
+# Prevents concurrent vrecord instances via exclusive file locking
 # ============================================================================
-# acquire_lock: Obtain exclusive lock to prevent concurrent instances
+
+# acquire_lock: Obtain exclusive lock using flock (preferred) or atomic mv
+# Uses flock(1) for file descriptor locking when available; falls back to
+# atomic rename operations with stale lock detection for portability
+# Args: $1=timeout_seconds (default: 5)
 acquire_lock() {
   local -i timeout=${1:-5}
   
@@ -334,8 +327,8 @@ release_lock() {
 
 # ============================================================================
 # CLEANUP AND SIGNAL HANDLING
+# Graceful shutdown: release locks, preserve active recordings if running
 # ============================================================================
-# cleanup_on_exit: Clean up temporary files and release lock on exit
 cleanup_on_exit() {
   local -- exit_code=$?
   
@@ -371,9 +364,10 @@ trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
 
 # ============================================================================
-# STATE MANAGEMENT FUNCTIONS
+# STATE MANAGEMENT
+# Track recording sessions via temp directory with state files:
+#   ffmpeg.pid, state, segment_count, current_file, main_file, segments/
 # ============================================================================
-# get_recording_dir: Retrieve the temporary directory for current recording
 get_recording_dir() {
   local -- current_recording="$STATE_DIR"/current_recording
   if [[ -f "$current_recording" ]]; then
@@ -414,8 +408,8 @@ init_temp_dir() {
 
 # ============================================================================
 # UTILITY FUNCTIONS
+# Disk space checks, timestamp generation, file listing, process validation
 # ============================================================================
-# check_disk_space: Verify sufficient disk space for recording
 check_disk_space() {
   local -- path=$1
   local -i required_mb="${2:-$MIN_DISK_SPACE_MB}"  # Use configured minimum
@@ -495,7 +489,7 @@ validate_ffmpeg_process() {
   fi
   
   # Check if it's actually ffmpeg
-  local -- cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
+  local -- cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo '')
   if [[ "$cmd" != ffmpeg ]]; then
     return 1
   fi
@@ -516,9 +510,9 @@ get_last_recording() {
 }
 
 # ============================================================================
-# LOG MANAGEMENT FUNCTIONS
+# LOG MANAGEMENT
+# Rotate and cleanup ffmpeg/merge logs to prevent unbounded growth
 # ============================================================================
-# rotate_log: Rotate log file if it exceeds size limit
 rotate_log() {
   local -- log_file=$1
   local -i max_size_bytes=$((LOG_MAX_SIZE_MB * 1024 * 1024))
@@ -583,9 +577,9 @@ check_log_before_write() {
 }
 
 # ============================================================================
-# BEEP NOTIFICATION FUNCTIONS
+# BEEP NOTIFICATIONS
+# Periodic audio reminders during active recording (via ffplay)
 # ============================================================================
-# beep_loop: Background process that plays beeps while recording
 beep_loop() {
   # Check if beep is enabled
   if ((BEEP_ENABLED == 0 || NO_BEEP == 1)); then
@@ -682,9 +676,14 @@ stop_beep_process() {
 }
 
 # ============================================================================
-# RECORDING CONTROL FUNCTIONS
+# RECORDING CONTROL
+# Core operations: start, pause, resume, stop, merge, convert
 # ============================================================================
-# start_recording: Start a new recording or resume an existing one
+
+# start_recording: Begin new recording or continue an existing WAV file
+# New recordings: create ${prefix}_TIMESTAMP.wav in RECORDING_DIR
+# Resume/continue: record new segments to TEMP_DIR/segments/, merge on stop
+# Args: $1=prefix, $2=resume_file, $3=continue_last_flag
 start_recording() {
   local -- filename_prefix=${1:-$DEFAULT_PREFIX}
   local -- resume_file=${2:-}
@@ -812,7 +811,7 @@ start_recording() {
     echo "0" > "$SEGMENT_COUNT_FILE"
     echo "$output_file" > "$TEMP_DIR"/main_file
     echo "$output_file" > "$TEMP_DIR"/current_file
-    [[ -d "$SEGMENTS_DIR" ]] && rm -rf "${SEGMENTS_DIR:?}"/*
+    [[ ! -d "$SEGMENTS_DIR" ]] || rm -rf "${SEGMENTS_DIR:?}"/*
     
     # Save transcribe flag if set
     if ((TRANSCRIBE == 1)); then
@@ -844,7 +843,8 @@ start_recording() {
   release_lock
 }
 
-# pause_recording: Pause an active recording using SIGSTOP
+# pause_recording: Suspend ffmpeg process with SIGSTOP signal
+# Recording can be resumed later with SIGCONT via resume_recording()
 pause_recording() {
   acquire_lock || return 1
   init_temp_dir
@@ -877,7 +877,7 @@ pause_recording() {
   release_lock
 }
 
-# resume_recording: Resume a paused recording using SIGCONT
+# resume_recording: Continue paused ffmpeg process with SIGCONT signal
 resume_recording() {
   acquire_lock || return 1
   init_temp_dir
@@ -914,7 +914,12 @@ resume_recording() {
   release_lock
 }
 
-# merge_segments: Concatenate recorded segments with the original file
+# merge_segments: Combine original file with recorded segments using ffmpeg
+# Uses ffmpeg concat demuxer with a filelist.txt containing:
+#   file '/path/to/original.wav'
+#   file '/path/to/segment_1.wav'
+#   ...
+# Segments are removed after successful merge; preserved on failure for recovery
 merge_segments() {
   local main_file=$1
   local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
@@ -961,7 +966,9 @@ merge_segments() {
   fi
 }
 
-# stop_recording: Stop recording, merge segments, and optionally convert to MP3
+# stop_recording: End recording session and finalize output files
+# Signal sequence: SIGCONT (if paused) → SIGTERM → wait → SIGKILL (timeout)
+# Then: merge segments (if any), convert to MP3 (unless --no-mp3), transcribe (if -t)
 stop_recording() {
   acquire_lock || return 1
   init_temp_dir
@@ -1133,52 +1140,64 @@ cleanup_files() {
   fi
 }
 
-# show_help: Display usage information and exit
+# show_help: Display usage information
 show_help() {
   cat <<HELP
-Voice Recorder with Resume Capability
+vrecord - Voice Recorder with Resume Capability
 
-Usage: $SCRIPT_NAME [global-options] <command> [command-options]
-
-Global Options (can appear anywhere):
-  -n, --no-mp3     Skip MP3 conversion when stopping recording
-  -b, --no-beep    Disable beep notifications for this session
-  -v, --verbose    Increase verbosity (can be used multiple times)
-  -q, --quiet      Suppress all output except errors
-  -h, --help       Show this help message
-  -V, --version    Display version information and exit
+Usage: $SCRIPT_NAME [options] <command> [args]
 
 Commands:
-  start [prefix]           Start new recording with optional filename prefix
-  start -c                 Continue the most recent recording
-  start -r FILE            Resume specific recording file
-  start -t                 Enable transcription after MP3 creation
-  pause                    Pause current recording
-  resume                   Resume paused recording  
-  stop                     Stop recording and save file
-  stop -t                  Stop and enable transcription after MP3 creation
-  status                   Show current recording status
-  list                     List existing recordings (WAV files only)
-  list --all               List all files in recordings directory
-  help                     Show this help message
+  start [PREFIX]    Start new recording (default prefix: voice_recording)
+  start -c          Continue the most recent recording
+  start -r FILE     Resume a specific WAV file
+  pause             Pause active recording (SIGSTOP)
+  resume            Resume paused recording (SIGCONT)
+  stop              Stop recording, create MP3
+  status            Show recording state and file info
+  list [--all]      List WAV files (or all files with --all)
+  help              Show this help
+
+Start Options:
+  -c, --continue-last   Append to the most recent WAV file
+  -r, --resume FILE     Append to a specific WAV file
+  -t, --transcribe      Transcribe after MP3 conversion
+
+Stop Options:
+  -t, --transcribe      Transcribe the MP3 file
+
+Global Options:
+  -n, --no-mp3     Skip MP3 conversion
+  -b, --no-beep    Disable periodic beep reminders
+  -v, --verbose    Increase output verbosity
+  -q, --quiet      Suppress non-error output
+  -h, --help       Show this help
+  -V, --version    Show version
 
 Examples:
-  $SCRIPT_NAME start                      # Start new recording with default prefix
-  $SCRIPT_NAME start meeting              # Start new recording as meeting_TIMESTAMP.wav
-  $SCRIPT_NAME -n start interview         # Start recording without MP3 conversion
-  $SCRIPT_NAME start -c                   # Continue the most recent recording
-  $SCRIPT_NAME start -t meeting           # Start recording with transcription enabled
-  $SCRIPT_NAME stop --no-mp3              # Stop recording without MP3 conversion
-  $SCRIPT_NAME stop -t                    # Stop and transcribe the MP3 file
-  $SCRIPT_NAME -q start -r voice.wav      # Resume recording quietly
-  $SCRIPT_NAME list --all                 # Show all files in recordings directory
+  # Basic workflow
+  $SCRIPT_NAME start meeting       # → meeting_20250120_143052.wav
+  $SCRIPT_NAME pause               # Pause recording
+  $SCRIPT_NAME resume              # Resume recording
+  $SCRIPT_NAME stop                # → meeting_20250120_143052.mp3
 
-Recordings are saved to: $RECORDING_DIR
-State files are saved to: $STATE_DIR
+  # Continue previous recording
+  $SCRIPT_NAME start -c            # Append to most recent WAV
 
-Note: Recording continues even if you exit this script.
-      Use '$SCRIPT_NAME status' to check and '$SCRIPT_NAME stop' to end recording.
+  # Record with transcription
+  $SCRIPT_NAME start -t notes      # Start with transcribe flag
+  $SCRIPT_NAME stop                # Stop, convert, transcribe
 
+  # Skip MP3 conversion
+  $SCRIPT_NAME -n start interview  # Record WAV only
+  $SCRIPT_NAME stop --no-mp3       # Or specify at stop time
+
+Paths:
+  Recordings: $RECORDING_DIR
+  State:      $STATE_DIR
+
+Recording continues in background after script exits.
+Use 'status' to check state and 'stop' to finalize.
 HELP
   exit 0
 }
@@ -1186,8 +1205,8 @@ HELP
 
 # ============================================================================
 # COMMAND-LINE PARSING
+# Global options first, then command with command-specific options
 # ============================================================================
-# parse_args: Parse global options and extract command
 parse_args() {
   local -a args=()
   local -- command=''
@@ -1315,7 +1334,6 @@ process_command() {
 # MAIN ENTRY POINT
 # ============================================================================
 main() {
-  # Clean up old logs on startup
   clean_old_logs
   
   # Parse arguments and execute command
