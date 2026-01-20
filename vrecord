@@ -872,8 +872,10 @@ pause_recording() {
   else
     error 'Recording process not found!'
     cleanup_files
+    release_lock
+    return 1
   fi
-  
+
   release_lock
 }
 
@@ -909,8 +911,10 @@ resume_recording() {
   else
     error 'Recording process not found!'
     cleanup_files
+    release_lock
+    return 1
   fi
-  
+
   release_lock
 }
 
@@ -1038,6 +1042,9 @@ stop_recording() {
     fi
   else
     error 'Recording process not found!'
+    cleanup_files
+    release_lock
+    return 1
   fi
 
   cleanup_files

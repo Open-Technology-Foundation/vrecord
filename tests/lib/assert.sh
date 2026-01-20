@@ -180,11 +180,12 @@ assert_process_not_running() {
 }
 
 # assert_exit_code: Check last command exit code
+# NOTE: Must capture $? before any local declarations (local resets $?)
 assert_exit_code() {
-  local -i expected_code="$1"
   local -i actual_code=$?
+  local -i expected_code="$1"
   local -- message="${2:-Expected exit code $expected_code but got $actual_code}"
-  
+
   if ((actual_code == expected_code)); then
     pass
   else
