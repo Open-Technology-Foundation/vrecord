@@ -1,6 +1,6 @@
-# vrecord - Advanced Bash Voice Recorder
+# vrecord - Voice Recorder with Resume Capability
 
-A robust command-line voice recording tool for Linux with pause/resume, continuation, and transcription capabilities. Built with modern Bash standards for reliability and maintainability.
+Command-line voice recorder for Linux with pause/resume via signals, continue/append to existing recordings, automatic MP3 conversion, and optional transcription.
 
 ## Quick Install
 
@@ -17,17 +17,14 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 
 ## Features
 
-- **Record audio** from your default microphone
-- **Pause and resume** recordings without losing data
-- **Continue previous recordings** - append new audio to existing files
-- **Automatic MP3 conversion** after recording stops
-- **Beep notifications** - optional audio feedback every N seconds while recording
-- **Simple command-line interface** with intuitive commands
-- **Background recording** - continues even if you close the terminal
-- **No data loss** - recordings are preserved even if interrupted
-- **Secure** - prevents command injection and ensures safe file handling
-- **Concurrent protection** - prevents multiple instances from interfering
-- **Modern Bash standards** - follows comprehensive coding guidelines for reliability
+- **Pause/resume** via SIGSTOP/SIGCONT signals
+- **Continue recordings** - append to existing WAV files
+- **Automatic MP3** conversion (libmp3lame)
+- **Transcription** integration (optional)
+- **Beep notifications** - periodic audio reminder while recording
+- **Background operation** - recordings persist after terminal closes
+- **Secure** - input validation prevents injection and path traversal
+- **Concurrent protection** - flock-based locking prevents conflicts
 
 ## Quick Start
 
@@ -205,27 +202,43 @@ vrecord -V
 
 ## Command Reference
 
-### Global Options
-- `-n, --no-mp3`   Skip MP3 conversion when stopping
-- `-b, --no-beep`  Disable beep notifications for this session
-- `-q, --quiet`    Suppress output except errors
-- `-v, --verbose`  Increase verbosity (can be used multiple times)
-- `-h, --help`     Show help message
-- `-V, --version`  Display version information
-
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `start [prefix]` | Start new recording with optional filename prefix |
+| `start [PREFIX]` | Start new recording (default prefix: voice_recording) |
 | `start -c` | Continue the most recent recording |
-| `start -r FILE` | Resume specific recording file |
-| `pause` | Pause current recording |
-| `resume` | Resume paused recording |
-| `stop` | Stop recording and save file |
-| `status` | Show current recording status |
-| `list` | List WAV recordings |
-| `list --all` | List all files in recordings directory |
+| `start -r FILE` | Resume a specific WAV file |
+| `pause` | Pause active recording (SIGSTOP) |
+| `resume` | Resume paused recording (SIGCONT) |
+| `stop` | Stop recording, create MP3 |
+| `status` | Show recording state and file info |
+| `list [--all]` | List WAV files (or all files with --all) |
+
+### Start Options
+
+| Option | Description |
+|--------|-------------|
+| `-c, --continue-last` | Append to the most recent WAV file |
+| `-r, --resume FILE` | Append to a specific WAV file |
+| `-t, --transcribe` | Transcribe after MP3 conversion |
+
+### Stop Options
+
+| Option | Description |
+|--------|-------------|
+| `-t, --transcribe` | Transcribe the MP3 file |
+
+### Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-n, --no-mp3` | Skip MP3 conversion |
+| `-b, --no-beep` | Disable periodic beep reminders |
+| `-v, --verbose` | Increase output verbosity |
+| `-q, --quiet` | Suppress non-error output |
+| `-h, --help` | Show help |
+| `-V, --version` | Show version |
 
 ## Default File Locations
 
@@ -237,20 +250,23 @@ vrecord -V
 
 ## Configuration
 
-vrecord supports configuration through multiple methods (in order of precedence):
+Configuration precedence (highest to lowest):
 
-1. **Environment variables** (highest priority)
-   - `VRECORD_RECORDING_DIR` - Where to save recordings
-   - `VRECORD_STATE_DIR` - State and config directory
-   - `VRECORD_DEFAULT_PREFIX` - Default filename prefix
-   - `VRECORD_MP3_BITRATE` - MP3 encoding bitrate
-   - Additional options can be set via environment (prefix with `VRECORD_`)
+1. **Environment variables** (`VRECORD_*` prefix)
+2. **User config**: `~/.vrecord/config`
+3. **System config**: `/etc/vrecord/config`
+4. **Built-in defaults**
 
-2. **User config file**: `~/.vrecord/config`
-3. **System config file**: `/etc/vrecord/config` (if exists)
-4. **Built-in defaults** (lowest priority)
+### Environment Variables
 
-Note: Config files are bash scripts that set variables. They are sourced in order, with later values overriding earlier ones.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VRECORD_RECORDING_DIR` | Where WAV/MP3 files are saved | `~/Recordings` |
+| `VRECORD_STATE_DIR` | Persistent state directory | `~/.vrecord` |
+| `VRECORD_DEFAULT_PREFIX` | Filename prefix when none specified | `voice_recording` |
+| `VRECORD_MP3_BITRATE` | libmp3lame bitrate | `192k` |
+
+Config files are bash scripts that set variables directly (without the `VRECORD_` prefix).
 
 ### Beep Notifications
 
@@ -279,27 +295,28 @@ The transcription will run after the MP3 file is created. The `transcribe` comma
 **Note**: If you have OPENAI_API_KEY, you can use the transcription feature.  Install the transcribe tool from:
 [https://github.com/Open-Technology-Foundation/transcribe](https://github.com/Open-Technology-Foundation/transcribe).  Use will require OPENAI_API_KEY.
 
-### Additional Configuration Options
+### Audio Settings
 
-- `AUDIO_FORMAT` - Audio codec (default: pcm_s16le)
-- `SAMPLE_RATE` - Sample rate in Hz (default: 44100)
-- `CHANNELS` - Number of channels (default: 2 for stereo)
-- `MIN_DISK_SPACE_MB` - Minimum required disk space (default: 100)
-- `LOG_MAX_SIZE_MB` - Maximum log file size before rotation (default: 10)
-- `LOG_MAX_FILES` - Number of rotated log files to keep (default: 5)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUDIO_FORMAT` | WAV codec | `pcm_s16le` (16-bit PCM) |
+| `SAMPLE_RATE` | Sample rate (Hz) | `44100` |
+| `CHANNELS` | Mono (1) or stereo (2) | `2` |
+| `MIN_DISK_SPACE_MB` | Minimum free space to start | `100` |
+| `LOG_MAX_SIZE_MB` | Rotate logs when exceeded | `10` |
+| `LOG_MAX_FILES` | Rotated log files to keep | `5` |
 
-See `config.sample` for all available options and examples.
+See `config.sample` for a complete example.
 
 ## How It Works
 
-1. **Recording**: Uses FFmpeg to capture audio from PulseAudio
-2. **Pause/Resume**: Sends SIGSTOP/SIGCONT signals to FFmpeg process
-3. **Continue**: Records new segments and merges them with the original file
-4. **State Persistence**: Maintains recording state across script invocations
-5. **Lock Management**: Uses atomic file locking (flock) to prevent concurrent instances
-6. **Security**: Validates all user inputs to prevent command injection and path traversal
-7. **Log Management**: Automatically rotates logs to prevent disk space issues
-8. **Beep Notifications**: Background process plays audio feedback during active recording
+1. **Recording**: FFmpeg captures audio from PulseAudio default input
+2. **Pause/Resume**: SIGSTOP suspends ffmpeg; SIGCONT resumes it
+3. **Continue/Resume**: New audio records to segment files, merged on stop using ffmpeg concat demuxer
+4. **State**: Session data stored in `/tmp/vrecord.XXXXXX/` (ffmpeg.pid, state, segments/)
+5. **Locking**: flock(1) prevents concurrent instances; falls back to atomic rename
+6. **Stop sequence**: SIGCONT (if paused) → SIGTERM → wait → SIGKILL (timeout)
+7. **Conversion**: WAV → MP3 via libmp3lame at configured bitrate
 
 ## Tips
 
@@ -342,42 +359,33 @@ vrecord implements several security measures:
 
 ## Requirements
 
-- Linux with PulseAudio
-- FFmpeg (with PulseAudio support)
-- Bash 5.2+ (uses modern Bash features)
-- Optional: mediainfo (for detailed file information)
+- **Bash 5.2+** (uses `inherit_errexit`, `extglob`, `nullglob`)
+- **FFmpeg** with PulseAudio support (`ffmpeg -devices | grep pulse`)
+- **PulseAudio** (`pactl`)
+- **Optional**: mediainfo (file info), gzip (log compression), transcribe (transcription)
 
 ## Development
-
-### Code Standards
-
-vrecord follows strict Bash coding standards for reliability and maintainability:
-
-- **Error Handling**: Uses `set -euo pipefail` for robust error handling
-- **Code Style**: Follows comprehensive Bash style guide (see [BASH-CODING-STYLE](https://github.com/Open-Technology-Foundation/bash-coding-standard))
-- **Indentation**: 2-space indentation throughout
-- **ShellCheck**: All code passes ShellCheck validation
-- **Testing**: Comprehensive test suite in `tests/` directory
 
 ### Testing
 
 ```bash
-# Run full test suite
-./run_tests.sh
-
-# Run specific test suite
-./tests/test_vrecord.sh basic_commands
-./tests/test_vrecord.sh recording_operations
+./run_tests.sh                           # Full test suite
+./tests/test_vrecord.sh basic_commands   # Specific suite
+./tests/test_vrecord.sh recording_basic
+./tests/test_vrecord.sh pause_resume
 ```
+
+### Code Standards
+
+- `set -euo pipefail` with `inherit_errexit`
+- 2-space indentation, ShellCheck compliant
+- Follows [BCS (Bash Coding Standard)](https://github.com/Open-Technology-Foundation/bash-coding-standard)
 
 ## License
 
-GPL-3.0-or-later - see LICENSE file for details
+GPL-3.0-or-later - Copyright (C) 2024-2025 Open Technology Foundation
 
-## Repository
+## Links
 
-GitHub: [https://github.com/Open-Technology-Foundation/vrecord](https://github.com/Open-Technology-Foundation/vrecord)
-
----
-
-For bug reports and feature requests, please use the GitHub issue tracker.
+- **Repository**: [github.com/Open-Technology-Foundation/vrecord](https://github.com/Open-Technology-Foundation/vrecord)
+- **Issues**: [github.com/Open-Technology-Foundation/vrecord/issues](https://github.com/Open-Technology-Foundation/vrecord/issues)
