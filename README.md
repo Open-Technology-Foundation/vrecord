@@ -41,6 +41,42 @@ vrecord stop -t
 # Your recording is saved in ~/Recordings/
 ```
 
+## vrecord-loop - Quick Recording Loop
+
+`vrecord-loop` is a companion script for rapid voice recordings with automatic transcription. It provides an interactive loop: record → stop → display transcription → repeat.
+
+### Usage
+
+```bash
+# Start interactive recording loop
+vrecord-loop
+
+# With custom filename prefix
+vrecord-loop meeting-notes
+
+# Quiet mode (suppress non-error output)
+vrecord-loop -q
+```
+
+### How It Works
+
+1. Recording starts automatically with transcription enabled
+2. Press any key to stop recording
+3. Recording is converted to MP3 and transcribed
+4. Transcription is displayed
+5. Press Enter to start next recording, or 'q' to quit
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `-v, --verbose` | Enable verbose output (default) |
+| `-q, --quiet` | Suppress non-error output |
+| `-h, --help` | Show help |
+| `-V, --version` | Show version |
+
+**Requires**: vrecord, transcribe command in PATH
+
 ## Installation
 
 ### Automatic Installation (Recommended)
@@ -84,11 +120,11 @@ The installer will:
 3. Copy to your PATH:
    ```bash
    # System-wide
-   sudo cp vrecord /usr/local/bin/
-   
+   sudo cp vrecord vrecord-loop /usr/local/bin/
+
    # Or user-only
    mkdir -p ~/.local/bin
-   cp vrecord ~/.local/bin/
+   cp vrecord vrecord-loop ~/.local/bin/
    ```
 
 4. Enable bash completion:
@@ -118,7 +154,7 @@ If installed with the installer:
 
 Or manually remove:
 ```bash
-sudo rm -f /usr/local/bin/vrecord
+sudo rm -f /usr/local/bin/vrecord /usr/local/bin/vrecord-loop
 sudo rm -f /etc/bash_completion.d/vrecord
 rm -rf ~/.vrecord  # Optional: remove config
 ```
