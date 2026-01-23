@@ -162,7 +162,7 @@ declare -i LOG_MAX_FILES=${LOG_MAX_FILES:-5}                 # Keep N rotated lo
 # Beep notifications - periodic audio reminder during recording
 declare -i BEEP_ENABLED=${BEEP_ENABLED:-1}                   # 1=enabled, 0=disabled
 declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}                # Seconds between beeps
-declare -- BEEP_FILE="${BEEP_FILE:-$STATE_DIR/beep.mp3}"     # Sound file path
+declare -- BEEP_FILE=${BEEP_FILE:-"$STATE_DIR"/beep.mp3}     # Sound file path
 
 # Runtime state - initialized during execution
 declare -- TEMP_DIR=''  # Session temp dir: /tmp/vrecord.XXXXXX
@@ -196,10 +196,10 @@ load_config /etc/vrecord/config
 load_config "$STATE_DIR"/config
 
 # Environment variable overrides (VRECORD_* prefix)
-RECORDING_DIR="${VRECORD_RECORDING_DIR:-$RECORDING_DIR}"
-STATE_DIR="${VRECORD_STATE_DIR:-$STATE_DIR}"
-DEFAULT_PREFIX="${VRECORD_DEFAULT_PREFIX:-$DEFAULT_PREFIX}"
-MP3_BITRATE="${VRECORD_MP3_BITRATE:-$MP3_BITRATE}"
+RECORDING_DIR=${VRECORD_RECORDING_DIR:-$RECORDING_DIR}
+STATE_DIR=${VRECORD_STATE_DIR:-$STATE_DIR}
+DEFAULT_PREFIX=${VRECORD_DEFAULT_PREFIX:-$DEFAULT_PREFIX}
+MP3_BITRATE=${VRECORD_MP3_BITRATE:-$MP3_BITRATE}
 
 # Derived paths
 LOCK_FILE="$STATE_DIR"/vrecord.lock
@@ -618,7 +618,7 @@ beep_loop() {
   fi
   
   # Main beep loop
-  while true; do
+  while :; do
     # Check if we should continue (recording state)
     if [[ -f "$STATE_FILE" ]]; then
       local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')

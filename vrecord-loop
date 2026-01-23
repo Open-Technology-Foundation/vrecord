@@ -122,11 +122,11 @@ run_recording_loop() {
         # Template mode: substitute {{FILE}} with actual path
         local -- cmd=${CALL_APP//\{\{FILE\}\}/$txt_file}
         info "Running: $cmd"
-        eval "$cmd" || warn 'CALL_APP command failed'
+        eval "$cmd" || error 'CALL_APP command failed'
       else
         # Default: pipe transcription via stdin
         info "Piping to: $CALL_APP"
-        $CALL_APP < "$txt_file" || warn 'CALL_APP command failed'
+        $CALL_APP < "$txt_file" || error 'CALL_APP command failed'
       fi
       continue
     fi
