@@ -11,6 +11,7 @@ declare -r SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # Configuration (can be modified by arguments or environment)
 declare -- RECORDING_DIR=${RECORDING_DIR:-"$HOME"/Recordings}
+declare -- CALL_APP=${CALL_APP:-}  # Optional: command to receive transcription (stdin or {{FILE}})
 
 # Runtime flags
 declare -i VERBOSE=${VERBOSE:-1}
@@ -40,6 +41,7 @@ warn() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 success() { ((VERBOSE)) || return 0; >&2 _msg "$@" || return 0; }
 error() { >&2 _msg "$@"; }
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
+noarg() { (($# > 1)) || die 22 "Option ${1@Q} requires an argument"; }
 
 show_help() {
   cat <<HELP
@@ -48,6 +50,7 @@ $SCRIPT_NAME $VERSION - Quick voice recording with transcription
 Usage: $SCRIPT_NAME [Options] [prefix]
 
 Options:
+  -C, --call CMD         Command to receive transcription (overrides CALL_APP)
   -v, --verbose          Enable verbose output (default)
   -q, --quiet            Disable verbose output
   -h, --help             Display this help message
@@ -55,6 +58,10 @@ Options:
 
 Arguments:
   prefix                 Recording filename prefix (default: voice)
+
+Environment:
+  CALL_APP               Command to receive transcription. Uses stdin by default.
+                         Use {{FILE}} placeholder for file path: 'myapp {{FILE}}'
 
 Requires: vrecord
 HELP
@@ -109,6 +116,21 @@ run_recording_loop() {
       >&2 echo
     fi
 
+    # Optional: call external program with transcription
+    if [[ -n "${CALL_APP:-}" && -n "$txt_file" && -f "$txt_file" ]]; then
+      if [[ "$CALL_APP" == *'{{FILE}}'* ]]; then
+        # Template mode: substitute {{FILE}} with actual path
+        local -- cmd=${CALL_APP//\{\{FILE\}\}/$txt_file}
+        info "Running: $cmd"
+        eval "$cmd" || warn 'CALL_APP command failed'
+      else
+        # Default: pipe transcription via stdin
+        info "Piping to: $CALL_APP"
+        $CALL_APP < "$txt_file" || warn 'CALL_APP command failed'
+      fi
+      continue
+    fi
+
     # Exit on 'q'
     if [[ "${key,,}" == q ]]; then
       info 'Exiting'
@@ -130,6 +152,7 @@ main() {
 
   while (($#)); do
     case $1 in
+      -C|--call)     noarg "$@"; shift; CALL_APP=$1;;
       -v|--verbose)  VERBOSE=1 ;;
       -q|--quiet)    VERBOSE=0 ;;
       -V|--version)  echo "$SCRIPT_NAME $VERSION"; return 0 ;;
@@ -144,7 +167,7 @@ main() {
   done
   [[ -n "$prefix" ]] || prefix=voice
 
-  readonly -- VERBOSE RECORDING_DIR
+  readonly -- VERBOSE RECORDING_DIR CALL_APP
 
   check_prerequisites
   check_not_recording
