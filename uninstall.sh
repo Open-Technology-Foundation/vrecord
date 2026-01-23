@@ -47,10 +47,14 @@ main() {
     # Check system locations
     check_and_remove "/usr/local/bin/vrecord" "system binary" "yes"
     check_and_remove "/usr/bin/vrecord" "system binary" "yes"
-    
+    check_and_remove "/usr/local/bin/vrecord-loop" "system binary (vrecord-loop)" "yes"
+    check_and_remove "/usr/bin/vrecord-loop" "system binary (vrecord-loop)" "yes"
+
     # Check user locations
     check_and_remove "$HOME/.local/bin/vrecord" "user binary" "no"
     check_and_remove "$HOME/bin/vrecord" "user binary" "no"
+    check_and_remove "$HOME/.local/bin/vrecord-loop" "user binary (vrecord-loop)" "no"
+    check_and_remove "$HOME/bin/vrecord-loop" "user binary (vrecord-loop)" "no"
     
     # Check completion files
     local completion_dirs=(
