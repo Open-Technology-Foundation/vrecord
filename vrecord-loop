@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# vquick - Quick voice recording with transcription
+# Interactive loop: record, transcribe, display, repeat
+set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
+
+declare -r VERSION=1.0.0
+#shellcheck disable=SC2155
+declare -r SCRIPT_PATH=$(realpath -- "$0")
+declare -r SCRIPT_NAME=${SCRIPT_PATH##*/}
+
+# Configuration (can be modified by arguments or environment)
+declare -- RECORDING_DIR=${RECORDING_DIR:-"$HOME"/Recordings}
+
+# Runtime flags
+declare -i VERBOSE=${VERBOSE:-1}
+
+# Color Definitions
+if [[ -t 1 && -t 2 ]]; then
+  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
+else
+  declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
+fi
+
+# Utility Functions
+_msg() {
+  local -- prefix="$SCRIPT_NAME:" msg
+  case ${FUNCNAME[1]} in
+    info)    prefix+=" ${CYAN}◉${NC}" ;;
+    warn)    prefix+=" ${YELLOW}▲${NC}" ;;
+    success) prefix+=" ${GREEN}✓${NC}" ;;
+    error)   prefix+=" ${RED}✗${NC}" ;;
+    *)       ;;
+  esac
+  for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
+}
+
+info() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+warn() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
+success() { ((VERBOSE)) || return 0; >&2 _msg "$@" || return 0; }
+error() { >&2 _msg "$@"; }
+die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
+
+show_help() {
+  cat <<HELP
+$SCRIPT_NAME $VERSION - Quick voice recording with transcription
+
+Usage: $SCRIPT_NAME [Options] [prefix]
+
+Options:
+  -v, --verbose          Enable verbose output (default)
+  -q, --quiet            Disable verbose output
+  -h, --help             Display this help message
+  -V, --version          Display version information
+
+Arguments:
+  prefix                 Recording filename prefix (default: voice)
+
+Requires: vrecord
+HELP
+}
+
+check_prerequisites() {
+  command -v vrecord >/dev/null 2>&1 || die 1 'Required command not found: vrecord'
+}
+
+check_not_recording() {
+  # Check if vrecord status indicates active recording
+  if ! vrecord status 2>&1 | grep -q 'No active recording'; then
+    die 1 'A recording is already in progress. Use "vrecord stop" first.'
+  fi
+}
+
+validate_prefix() {
+  local -- prefix=$1
+  [[ "$prefix" =~ ^[a-zA-Z0-9._-]+$ ]] || die 22 "Invalid prefix: only alphanumeric, dots, underscores, hyphens allowed"
+}
+
+run_recording_loop() {
+  local -- prefix=$1
+  local -- key txt_file
+  local -a verbose_flag=()
+
+  if ((VERBOSE)); then
+    verbose_flag+=('-v')
+  else
+    verbose_flag+=('-q')
+  fi
+
+  while :; do
+    # Start recording with transcription enabled
+    vrecord start -t "${verbose_flag[@]}" "$prefix"
+
+    # Wait for any key
+    info 'Recording... Press any key to stop (q to quit)'
+    read -rsn1 key
+    >&2 echo
+
+    # Stop and transcribe
+    vrecord stop "${verbose_flag[@]}"
+
+    # Find and display the most recent transcription
+    # shellcheck disable=SC2012  # ls -t is safe here; filenames validated by vrecord
+    txt_file=$(ls -t "$RECORDING_DIR"/"$prefix"*.txt 2>/dev/null | head -1) || txt_file=''
+
+    if [[ -n "$txt_file" && -f "$txt_file" ]]; then
+      info '--- Transcription ---'
+      cat "$txt_file"
+      >&2 echo
+    fi
+
+    # Exit on 'q'
+    if [[ "${key,,}" == q ]]; then
+      info 'Exiting'
+      break
+    fi
+
+    info '--- Press Enter to start next recording, or q to quit ---'
+    read -rsn1 key
+    >&2 echo
+    if [[ "${key,,}" == q ]]; then
+      info 'Exiting'
+      break
+    fi
+  done
+}
+
+main() {
+  local -- prefix=''
+
+  while (($#)); do
+    case $1 in
+      -v|--verbose)  VERBOSE=1 ;;
+      -q|--quiet)    VERBOSE=0 ;;
+      -V|--version)  echo "$SCRIPT_NAME $VERSION"; return 0 ;;
+      -h|--help)     show_help; return 0 ;;
+      -[vqVh]?*)     set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
+      --)            shift; break ;;
+      -*)            die 22 "Invalid option ${1@Q}" ;;
+      *)             [[ -z $prefix ]] || die 2 "Unexpected argument ${1@Q}"
+                     prefix=$1 ;;
+    esac
+    shift
+  done
+  [[ -n "$prefix" ]] || prefix=voice
+
+  readonly -- VERBOSE RECORDING_DIR
+
+  check_prerequisites
+  check_not_recording
+  validate_prefix "$prefix"
+  run_recording_loop "$prefix"
+}
+
+main "$@"
+#fin
