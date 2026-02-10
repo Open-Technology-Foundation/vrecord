@@ -29,7 +29,6 @@ _msg() {
   case ${FUNCNAME[1]} in
     info)    prefix+=" ${CYAN}◉${NC}" ;;
     warn)    prefix+=" ${YELLOW}▲${NC}" ;;
-    success) prefix+=" ${GREEN}✓${NC}" ;;
     error)   prefix+=" ${RED}✗${NC}" ;;
     *)       ;;
   esac
@@ -38,7 +37,6 @@ _msg() {
 
 info() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 warn() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
-success() { ((VERBOSE)) || return 0; >&2 _msg "$@" || return 0; }
 error() { >&2 _msg "$@"; }
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
 noarg() { (($# > 1)) || die 22 "Option ${1@Q} requires an argument"; }
@@ -103,6 +101,13 @@ run_recording_loop() {
     read -rsn1 key
     >&2 echo
 
+#    if [[ ${key,,} == q ]]; then
+#    	vrecord stop
+#      txt_file=$(ls -t "$RECORDING_DIR"/"$prefix"*.txt 2>/dev/null | head -1) || txt_file=''
+#    	info 'Recording stopped' "$txt_file"
+#      exit 0
+#    fi
+
     # Stop and transcribe
     vrecord stop "${verbose_flag[@]}"
 
@@ -141,6 +146,7 @@ run_recording_loop() {
     read -rsn1 key
     >&2 echo
     if [[ "${key,,}" == q ]]; then
+      vrecord stop
       info 'Exiting'
       break
     fi
