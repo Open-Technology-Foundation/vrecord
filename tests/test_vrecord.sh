@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source assertion library
+# shellcheck source=tests/lib/assert.sh
 source "$SCRIPT_DIR/lib/assert.sh"
 
 # Test configuration
@@ -62,24 +63,15 @@ test_basic_commands() {
 # Test: Recording start and stop
 test_recording_basic() {
   start_test "vrecord start creates recording"
-  "$VRECORD" start test_recording 2>/dev/null &
-  local pid=$!
-  sleep 2  # Let recording start
-  # Check if process started
-  if kill -0 $pid 2>/dev/null; then
-    assert_true "Recording should start successfully"
-  else
-    wait $pid
-    assert_true "Recording should start successfully"
-  fi
+  assert_success "vrecord start should exit cleanly" "$VRECORD" start test_recording
+  sleep 1  # let ffmpeg spin up before the status check below
   
   start_test "vrecord status shows active recording"
   output=$("$VRECORD" status 2>&1)
   assert_contains "$output" "Recording Status: recording"
   
   start_test "vrecord stop saves recording"
-  "$VRECORD" stop --no-mp3 2>/dev/null
-  assert_true "Recording should stop successfully"
+  assert_success "vrecord stop should exit cleanly" "$VRECORD" stop --no-mp3
   
   start_test "Recording file exists after stop"
   wav_file=$(find "$TEST_RECORDING_DIR" -name "test_recording_*.wav" -type f | head -n1)
@@ -91,16 +83,14 @@ test_pause_resume() {
   start_test "vrecord pause works"
   "$VRECORD" start pause_test 2>/dev/null
   sleep 1
-  "$VRECORD" pause 2>/dev/null
-  assert_true "Recording should pause successfully"
+  assert_success "vrecord pause should exit cleanly" "$VRECORD" pause
   
   start_test "vrecord status shows paused state"
   output=$("$VRECORD" status 2>&1)
   assert_contains "$output" "Recording Status: paused"
   
   start_test "vrecord resume works"
-  "$VRECORD" resume 2>/dev/null
-  assert_true "Recording should resume successfully"
+  assert_success "vrecord resume should exit cleanly" "$VRECORD" resume
   
   start_test "vrecord status shows recording after resume"
   output=$("$VRECORD" status 2>&1)
@@ -137,8 +127,7 @@ test_continue_recording() {
   "$VRECORD" stop --no-mp3 2>/dev/null
   
   start_test "vrecord start -c continues last recording"
-  "$VRECORD" start -c 2>/dev/null
-  assert_true "Continue should work"
+  assert_success "vrecord start -c should exit cleanly" "$VRECORD" start -c
   
   sleep 1
   "$VRECORD" stop --no-mp3 2>/dev/null
@@ -171,8 +160,11 @@ test_error_handling() {
   start_test "vrecord prevents concurrent recordings"
   "$VRECORD" start test1 2>/dev/null
   sleep 1
-  "$VRECORD" start test2 2>&1 | grep -q "already in progress" || true
-  assert_exit_code 0 "Should detect concurrent recording"
+  set +e
+  output=$("$VRECORD" start test2 2>&1)
+  set -e
+  assert_contains "$output" "already in progress" \
+    "A second concurrent start must be rejected with 'already in progress'"
   "$VRECORD" stop --no-mp3 2>/dev/null
 }
 

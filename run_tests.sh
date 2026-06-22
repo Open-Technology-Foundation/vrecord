@@ -16,10 +16,12 @@ NOCOLOR=$'\033[0m'
 echo "${YELLOW}Running vrecord test suite...${NOCOLOR}"
 echo
 
-# Check if we have audio hardware available
+# vrecord's recording tests drive a real ffmpeg/PulseAudio capture, so a live
+# audio server is required (there is no mock backend).
 if ! command -v pactl >/dev/null 2>&1 || ! pactl info >/dev/null 2>&1; then
-  echo "${YELLOW}Warning: No PulseAudio detected, using mock audio${NOCOLOR}"
-  export USE_MOCK_AUDIO=1
+  echo "${RED}Error: no PulseAudio/PipeWire-Pulse server detected.${NOCOLOR}" >&2
+  echo "The vrecord test suite needs a live audio server; aborting." >&2
+  exit 18  # ERR_NODEP
 fi
 
 # Run the tests

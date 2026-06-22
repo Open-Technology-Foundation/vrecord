@@ -27,20 +27,21 @@ declare -- CURRENT_TEST=""
 start_test() {
   local -- test_name="$1"
   CURRENT_TEST="$test_name"
-  ((TESTS_RUN+=1))
   printf "  Testing: %s ... " "$test_name"
 }
 
 # pass: Mark current test as passed
 pass() {
-  ((TESTS_PASSED+=1))
+  TESTS_RUN+=1
+  TESTS_PASSED+=1
   printf "%sPASS%s\n" "$TEST_GREEN" "$TEST_NOCOLOR"
 }
 
 # fail: Mark current test as failed with message
 fail() {
   local -- message="${1:-Assertion failed}"
-  ((TESTS_FAILED+=1))
+  TESTS_RUN+=1
+  TESTS_FAILED+=1
   printf "%sFAIL%s\n" "$TEST_RED" "$TEST_NOCOLOR"
   printf "    Error: %s\n" "$message"
 }
@@ -73,23 +74,51 @@ assert_not_equals() {
 
 # assert_true: Check if condition is true (exit code 0)
 assert_true() {
+  local -i code=$?   # MUST be first: any statement (incl. local) resets $?
   local -- message="${1:-Condition should be true}"
   
-  if [[ $? -eq 0 ]]; then
+  if ((code == 0)); then
     pass
   else
-    fail "$message"
+    fail "$message (got exit code $code)"
   fi
 }
 
 # assert_false: Check if condition is false (exit code non-zero)
 assert_false() {
+  local -i code=$?   # MUST be first: any statement (incl. local) resets $?
   local -- message="${1:-Condition should be false}"
   
-  if [[ $? -ne 0 ]]; then
+  if ((code != 0)); then
     pass
   else
-    fail "$message"
+    fail "$message (got exit code 0)"
+  fi
+}
+
+# assert_success: run a command and assert it exits 0 (safe under set -e).
+# Usage: assert_success "message" command [args...]
+assert_success() {
+  local -- message="$1"; shift
+  local -i code=0
+  "$@" >/dev/null 2>&1 || code=$?
+  if ((code == 0)); then
+    pass
+  else
+    fail "${message:-Command should succeed} (exit $code: $*)"
+  fi
+}
+
+# assert_failure: run a command and assert it exits non-zero (safe under set -e).
+# Usage: assert_failure "message" command [args...]
+assert_failure() {
+  local -- message="$1"; shift
+  local -i code=0
+  "$@" >/dev/null 2>&1 || code=$?
+  if ((code != 0)); then
+    pass
+  else
+    fail "${message:-Command should fail} (unexpected exit 0: $*)"
   fi
 }
 
@@ -198,7 +227,7 @@ print_test_summary() {
   echo
   echo "Test Summary:"
   echo "============="
-  printf "Total tests: %d\n" "$TESTS_RUN"
+  printf "Total checks: %d\n" "$TESTS_RUN"
   printf "%sPassed: %d%s\n" "$TEST_GREEN" "$TESTS_PASSED" "$TEST_NOCOLOR"
   if ((TESTS_FAILED > 0)); then
     printf "%sFailed: %d%s\n" "$TEST_RED" "$TESTS_FAILED" "$TEST_NOCOLOR"
