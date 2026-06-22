@@ -1217,6 +1217,7 @@ Commands:
   stop              Stop recording, create MP3
   status            Show recording state and file info
   list [--all]      List WAV files (or all files with --all)
+  play [FILE]       Play a recording (most recent if FILE omitted; .wav optional)
   help              Show this help
 
 Start Options:
@@ -1244,6 +1245,10 @@ Examples:
 
   # Continue previous recording
   $SCRIPT_NAME start -c            # Append to most recent WAV
+
+  # Play a recording
+  $SCRIPT_NAME play                # Play the most recent recording
+  $SCRIPT_NAME play meeting_20250120_143052   # Specific file (.wav optional)
 
   # Record with transcription
   $SCRIPT_NAME start -t notes      # Start with transcribe flag
@@ -1306,6 +1311,40 @@ EOF
 
   # Process the command with remaining arguments
   process_command "$command" ${args[@]+"${args[@]}"}
+}
+
+# play_recording: Play a recording with xdg-open
+# No argument plays the most recent WAV; a bare name is resolved in
+# RECORDING_DIR and the .wav extension is optional.
+play_recording() {
+  local -- file=${1:-}
+  local -- target=''
+
+  command -v xdg-open &>/dev/null \
+    || { error 'xdg-open not found (install xdg-utils to use play)'; return 1; }
+
+  if [[ -z "$file" ]]; then
+    # No argument: play the most recently modified recording
+    target=$(get_last_recording)
+    [[ -n "$target" ]] || { error 'No recordings found to play.'; return 1; }
+  else
+    # Reject unsafe names / traversal before touching the filesystem
+    validate_safe_filename "$file" 1 || return 1
+    # A bare name (no directory component) is resolved in RECORDING_DIR
+    [[ "$file" == */* ]] || file="$RECORDING_DIR/$file"
+    # The .wav extension is optional
+    if [[ ! -f "$file" && -f "$file.wav" ]]; then
+      file="$file.wav"
+    fi
+    target=$file
+  fi
+
+  # Keep playback within the recording directory (same guard as resume)
+  validate_recording_path "$target" || return 1
+  [[ -f "$target" ]] || { error "Recording not found: ${target@Q}"; return 1; }
+
+  info "Playing ${target@Q}"
+  xdg-open "$target" || { error "Failed to play ${target@Q}"; return 1; }
 }
 
 # process_command: Execute the requested command with its arguments
@@ -1384,6 +1423,15 @@ process_command() {
       esac; shift; done
       
       list_recordings "$show_all"
+      ;;
+    play)
+      local -- play_file=''
+      while (($#)); do case $1 in
+        -*)  die 2 "Unknown option for play: ${1@Q}" ;;
+        *)   [[ -z "$play_file" ]] || die 2 'Too many arguments for play command'
+             play_file=$1 ;;
+      esac; shift; done
+      play_recording "$play_file"
       ;;
     *)
       die 2 "Unknown command ${command@Q}. Use '$SCRIPT_NAME help' for usage."

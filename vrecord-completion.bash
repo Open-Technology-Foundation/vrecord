@@ -18,7 +18,7 @@ _vrecord_completions() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start pause resume stop status list help"
+  local commands="start pause resume stop status list play help"
   local global_opts="-n --no-mp3 -b --no-beep -v --verbose -q --quiet -h --help -V --version"
 
   # Get the command if one has been specified
@@ -111,6 +111,16 @@ _vrecord_completions() {
           COMPREPLY=()
           ;;
       esac
+      ;;
+
+    play)
+      # Complete with recording names (.wav stripped; bare names resolve in RECORDING_DIR)
+      local recording_dir="${VRECORD_RECORDING_DIR:-${RECORDING_DIR:-$HOME/Recordings}}"
+      if [[ -d "$recording_dir" ]]; then
+        local files
+        files=$(find "$recording_dir" -maxdepth 1 -name '*.wav' -printf '%f\n' 2>/dev/null | sed 's/\.wav$//')
+        mapfile -t COMPREPLY < <(compgen -W "$files" -- "$cur")
+      fi
       ;;
 
     pause|resume|status|help)

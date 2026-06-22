@@ -193,6 +193,42 @@ test_mp3_conversion() {
   assert_file_not_exists "$mp3_file" "MP3 file should not be created with --no-mp3"
 }
 
+# Test: play command (resolution + invocation, via a mocked xdg-open)
+test_play() {
+  # vrecord locks PATH to "$HOME/.local/bin:..." so a mock placed there wins.
+  local -- ph xdg_log
+  ph=$(mktemp -d)
+  mkdir -p "$ph/.local/bin"
+  xdg_log="$ph/xdg.log"
+  cat > "$ph/.local/bin/xdg-open" <<MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$1" > "$xdg_log"
+MOCK
+  chmod +x "$ph/.local/bin/xdg-open"
+
+  start_test "vrecord play <name> resolves to RECORDING_DIR and appends .wav"
+  touch "$TEST_RECORDING_DIR/playtest.wav"
+  HOME="$ph" "$VRECORD" play playtest 2>/dev/null
+  assert_equals "$TEST_RECORDING_DIR/playtest.wav" "$(cat "$xdg_log" 2>/dev/null || true)" \
+    "play should open the resolved .wav file"
+
+  start_test "vrecord play with no argument plays the most recent recording"
+  : > "$xdg_log"
+  sleep 1
+  touch "$TEST_RECORDING_DIR/playnewer.wav"
+  HOME="$ph" "$VRECORD" play 2>/dev/null
+  assert_equals "$TEST_RECORDING_DIR/playnewer.wav" "$(cat "$xdg_log" 2>/dev/null || true)" \
+    "no-arg play should open the most recent WAV"
+
+  start_test "vrecord play with a missing file fails"
+  set +e
+  HOME="$ph" "$VRECORD" play no_such_recording 2>/dev/null
+  assert_exit_code 1
+  set -e
+
+  rm -rf "$ph"
+}
+
 # Main test runner
 main() {
   echo "vrecord Test Suite"
@@ -215,6 +251,7 @@ main() {
     run_test_suite "Recording Basic" test_recording_basic
     run_test_suite "Pause/Resume" test_pause_resume
     run_test_suite "List Command" test_list_command
+    run_test_suite "Play" test_play
     run_test_suite "Continue Recording" test_continue_recording
     run_test_suite "Error Handling" test_error_handling
     run_test_suite "MP3 Conversion" test_mp3_conversion
