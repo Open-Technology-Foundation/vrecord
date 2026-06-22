@@ -886,10 +886,10 @@ pause_recording() {
     
     info "Recording paused. Use 'resume' to continue."
   else
-    error 'Recording process not found!'
-    cleanup_files
-    release_lock
-    return 1
+    # The recorder is gone; finalize and recover any segments rather than
+    # deleting them (the old code ran cleanup_files here, losing the audio).
+    finalize_orphaned_session || return 1
+    return 0
   fi
 
   release_lock
@@ -925,10 +925,10 @@ resume_recording() {
     
     info 'Recording resumed.'
   else
-    error 'Recording process not found!'
-    cleanup_files
-    release_lock
-    return 1
+    # The recorder is gone; finalize and recover any segments rather than
+    # deleting them (the old code ran cleanup_files here, losing the audio).
+    finalize_orphaned_session || return 1
+    return 0
   fi
 
   release_lock
@@ -984,6 +984,34 @@ merge_segments() {
           "Check $TEMP_DIR/merge.log for details"
     return 1
   fi
+}
+
+# finalize_orphaned_session: called when the recorder process is gone
+# (crash / OOM / external kill). Merge any resume segments into the original
+# BEFORE cleanup so freshly recorded audio is not lost, then clear session
+# state and release the lock. Returns 1 (leaving segments in place) on merge
+# failure, 0 otherwise.
+finalize_orphaned_session() {
+  warn 'Recording process not found (it may have already exited).'
+  stop_beep_process
+
+  local -- main_file=''
+  main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null || echo '')
+  local -i segment_count=0
+  segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
+
+  if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
+    merge_segments "$main_file" || {
+      warn 'Merge failed - segments preserved for recovery; see merge.log.'
+      clear_recording_dir
+      release_lock
+      return 1
+    }
+  fi
+
+  cleanup_files
+  release_lock
+  return 0
 }
 
 # stop_recording: End recording session and finalize output files
@@ -1065,21 +1093,9 @@ stop_recording() {
       fi
     fi
   else
-    # ffmpeg is already gone (crash / OOM / external kill). Merge any resume
-    # segments BEFORE cleaning up - otherwise cleanup_files deletes the audio
-    # we just recorded (critical data-loss path).
-    warn 'Recording process not found (it may have already exited).'
-    stop_beep_process
-    if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
-      merge_segments "$main_file" || {
-        warn 'Merge failed - segments preserved for recovery; see merge.log.'
-        clear_recording_dir
-        release_lock
-        return 1
-      }
-    fi
-    cleanup_files
-    release_lock
+    # ffmpeg is already gone (crash / OOM / external kill); finalize and
+    # recover any segments instead of stopping a live process.
+    finalize_orphaned_session || return 1
     return 0
   fi
 
