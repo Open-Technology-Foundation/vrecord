@@ -53,7 +53,7 @@ test_basic_commands() {
   
   start_test "vrecord --version shows version"
   output=$("$VRECORD" --version 2>&1 || true)
-  assert_contains "$output" "vrecord 1.0.0"
+  assert_contains "$output" "vrecord 1.1.0"
   
   start_test "vrecord --help shows help"
   output=$("$VRECORD" --help 2>&1 || true)

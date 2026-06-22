@@ -23,7 +23,7 @@ declare -r ORIG_PATH=$PATH
 declare -rx PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Script information
-declare -r VERSION=1.0.0
+declare -r VERSION=1.1.0
 declare -r SCRIPT_NAME='vrecord installer'
 
 # Colors for output (with TTY check)
