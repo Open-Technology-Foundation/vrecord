@@ -15,6 +15,11 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
+# Lock PATH to standard locations so the external tools this script runs
+# (ffmpeg, pactl, ffplay, mediainfo, transcribe) cannot be hijacked via a
+# rogue binary earlier in an inherited PATH.
+declare -rx PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Script metadata
 declare -r VERSION=1.0.0
 #shellcheck disable=SC2155
@@ -343,7 +348,10 @@ release_lock() {
 # ============================================================================
 cleanup_on_exit() {
   local -- exit_code=$?
-  
+  # Disarm traps so the exit below cannot re-enter this handler via the EXIT
+  # trap (signal -> cleanup_on_exit -> exit -> EXIT trap -> cleanup_on_exit).
+  trap - INT TERM EXIT
+
   # If we have an active recording PID, try to save it gracefully
   if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR"/ffmpeg.pid ]]; then
     local -- pid=$(cat "$TEMP_DIR"/ffmpeg.pid 2>/dev/null)
@@ -367,17 +375,9 @@ cleanup_on_exit() {
   exit $exit_code
 }
 
-# Signal handlers
-handle_signal() {
-  local -- signal=$1
-  warn "Received signal $signal"
-  cleanup_on_exit
-}
-
-# Set up traps
-trap cleanup_on_exit EXIT
-trap 'handle_signal INT' INT
-trap 'handle_signal TERM' TERM
+# Set up traps: one canonical handler for normal exit and for interrupts.
+# cleanup_on_exit disarms these as its first action to avoid re-entry.
+trap 'cleanup_on_exit' INT TERM EXIT
 
 # ============================================================================
 # STATE MANAGEMENT
@@ -1002,7 +1002,7 @@ finalize_orphaned_session() {
 
   if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
     merge_segments "$main_file" || {
-      warn 'Merge failed - segments preserved for recovery; see merge.log.'
+      error 'Merge failed - segments preserved for recovery; see merge.log.'
       clear_recording_dir
       release_lock
       return 1
@@ -1068,7 +1068,7 @@ stop_recording() {
     # (which would leave a stale session that a later stop would delete).
     if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
       merge_segments "$main_file" || {
-        warn 'Merge failed - segments preserved for recovery; see merge.log.'
+        error 'Merge failed - segments preserved for recovery; see merge.log.'
         clear_recording_dir
         release_lock
         return 1
