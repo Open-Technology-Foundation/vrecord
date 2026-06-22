@@ -66,7 +66,7 @@ _vrecord_completions() {
           ;;
         -r|--resume)
           # Complete with WAV files from recording directory
-          local recording_dir="${RECORDING_DIR:-$HOME/Recordings}"
+          local recording_dir="${VRECORD_RECORDING_DIR:-${RECORDING_DIR:-$HOME/Recordings}}"
           if [[ -d "$recording_dir" ]]; then
             # Get basenames of WAV files using find (safer than ls)
             local files

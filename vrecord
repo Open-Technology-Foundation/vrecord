@@ -13,7 +13,7 @@
 # Dependencies: ffmpeg (PulseAudio), pactl | Optional: mediainfo, transcribe
 #
 set -euo pipefail
-shopt -s inherit_errexit
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
 # Lock PATH to standard locations so the external tools this script runs
 # (ffmpeg, pactl, ffplay, mediainfo, transcribe) cannot be hijacked via a
@@ -32,7 +32,7 @@ declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 # ============================================================================
 declare -i VERBOSE=1 DEBUG=0
 # Standard colours
-if [[ -t 2 ]]; then
+if [[ -t 1 && -t 2 ]]; then
   declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
 else
   declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
@@ -42,16 +42,15 @@ _msg() {
   local -- prefix="$SCRIPT_NAME:" msg
   case ${FUNCNAME[1]} in
     success) prefix+=" ${GREEN}✓${NC}" ;;
-    warn)    prefix+=" ${YELLOW}⚡${NC}" ;;
+    warn)    prefix+=" ${YELLOW}▲${NC}" ;;
     info)    prefix+=" ${CYAN}◉${NC}" ;;
     error)   prefix+=" ${RED}✗${NC}" ;;
-    debug)   prefix+=" ${YELLOW}DEBUG${NC}:" ;;
+    debug)   prefix+=" ${YELLOW}⦿${NC}" ;;
     *)       ;;
   esac
   for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
 }
 # Conditional output based on verbosity
-vecho() { ((VERBOSE)) || return 0; _msg "$@"; }
 success() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 warn() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 info() { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
@@ -171,7 +170,7 @@ declare -- BEEP_FILE=${BEEP_FILE:-"$STATE_DIR"/beep.mp3}     # Sound file path
 
 # Runtime state - initialized during execution
 declare -- TEMP_DIR=''  # Session temp dir: /tmp/vrecord.XXXXXX
-declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE
+declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE TRANSCRIBE_FILE
 
 # Command-line flags - set by option parsing
 declare -i NO_MP3=0      # --no-mp3: skip MP3 conversion
@@ -219,7 +218,7 @@ mkdir -p "$RECORDING_DIR" "$STATE_DIR"
 check_dependencies() {
   local -i missing=0
   
-  if ! command -v ffmpeg >/dev/null 2>&1; then
+  if ! command -v ffmpeg &>/dev/null; then
     error 'ffmpeg is not installed!'
     missing+=1
   elif ! ffmpeg -hide_banner -devices 2>&1 | grep -q 'pulse'; then
@@ -227,7 +226,7 @@ check_dependencies() {
     missing+=1
   fi
   
-  if ! command -v pactl >/dev/null 2>&1; then
+  if ! command -v pactl &>/dev/null; then
     error 'PulseAudio is not installed!'
     missing+=1
   fi
@@ -254,7 +253,7 @@ acquire_lock() {
     return 1
   }
   
-  if command -v flock >/dev/null 2>&1; then
+  if command -v flock &>/dev/null; then
     # Use flock for atomic locking via file descriptor
     debug 'Using flock for lock management'
 
@@ -319,7 +318,7 @@ acquire_lock() {
 }
 
 release_lock() {
-  if command -v flock >/dev/null 2>&1; then
+  if command -v flock &>/dev/null; then
     # flock branch: the lock lives on the open file descriptor (FD 9), not on
     # the path. Drop the advisory lock and close the FD; do NOT unlink the file.
     # Unlinking a flock-held path lets a concurrent instance open a fresh inode
@@ -473,7 +472,7 @@ list_recordings() {
     done
   else
     # Show only WAV files
-    if ls "$RECORDING_DIR"/*.wav >/dev/null 2>&1; then
+    if compgen -G "$RECORDING_DIR/*.wav" &>/dev/null; then
       found=1
       for file in "$RECORDING_DIR"/*.wav; do
         basename=$(basename "$file")
@@ -556,7 +555,7 @@ rotate_log() {
     done
     
     # Compress and rotate current log
-    if command -v gzip >/dev/null 2>&1; then
+    if command -v gzip &>/dev/null; then
       gzip -c "$log_file" > "$log_file.1.gz" && : > "$log_file"
     else
       mv "$log_file" "$log_file.1" && : > "$log_file"
@@ -577,7 +576,7 @@ clean_old_logs() {
   fi
   
   # Clean up old temporary directories
-  find "$STATE_DIR" -name 'vrecord.*' -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+  find /tmp -maxdepth 1 -name "$SCRIPT_NAME.*" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 }
 
 # check_log_before_write: Check and rotate log before writing
@@ -628,7 +627,7 @@ beep_loop() {
   fi
   
   # Check if ffplay is available
-  if ! command -v ffplay >/dev/null 2>&1; then
+  if ! command -v ffplay &>/dev/null; then
     debug 'ffplay not found, beep notifications disabled'
     return 0
   fi
@@ -649,7 +648,7 @@ beep_loop() {
     fi
     
     # Play the beep
-    ffplay -nodisp -autoexit -loglevel quiet "$BEEP_FILE" >/dev/null 2>&1 || true
+    ffplay -nodisp -autoexit -loglevel quiet "$BEEP_FILE" &>/dev/null || true
     
     # Sleep for the interval
     sleep "$BEEP_INTERVAL"
@@ -789,9 +788,9 @@ start_recording() {
     echo "$output_file" > "$TEMP_DIR"/main_file
 
     # Get or initialize segment count
-    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo "0")
+    local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
     segment_count+=1
-    local segment_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
+    local -- segment_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
 
     info "Recording new segment ${segment_file@Q}"
 
@@ -824,7 +823,7 @@ start_recording() {
     ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$output_file" \
            </dev/null >/dev/null 2>>"$log_file" &
 
-    echo "0" > "$SEGMENT_COUNT_FILE"
+    echo '0' > "$SEGMENT_COUNT_FILE"
     echo "$output_file" > "$TEMP_DIR"/main_file
     echo "$output_file" > "$TEMP_DIR"/current_file
     [[ ! -d "$SEGMENTS_DIR" ]] || rm -rf "${SEGMENTS_DIR:?}"/*
@@ -941,7 +940,7 @@ resume_recording() {
 #   ...
 # Segments are removed after successful merge; preserved on failure for recovery
 merge_segments() {
-  local main_file=$1
+  local -- main_file=$1
   local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
   
   ((segment_count)) || return 0  # No segments to merge
@@ -971,7 +970,10 @@ merge_segments() {
   if ffmpeg -f concat -safe 0 -i "$filelist" -c copy "$temp_merged" -y \
             </dev/null >/dev/null 2>>"$log_file"; then
     # Replace original with merged version
-    mv "$temp_merged" "$main_file"
+    mv "$temp_merged" "$main_file" || {
+      error "Failed to replace ${main_file@Q} with merged output (kept ${temp_merged@Q})"
+      return 1
+    }
     info "Successfully merged segments into ${main_file@Q}"
 
     # Clean up segment files
@@ -1079,7 +1081,7 @@ stop_recording() {
       info "Recording saved to ${main_file@Q}"
 
       # Show file info
-      if command -v mediainfo >/dev/null 2>&1; then
+      if command -v mediainfo &>/dev/null; then
         info 'File info:'
         mediainfo "$main_file" 2>/dev/null | grep -E "(Duration|File size)" >&2 || true
       else
@@ -1108,7 +1110,7 @@ convert_to_mp3() {
   local -- wav_file=$1
   local -- mp3_file="${wav_file%.wav}".mp3
   
-  if ! command -v ffmpeg >/dev/null 2>&1; then
+  if ! command -v ffmpeg &>/dev/null; then
     warn "ffmpeg not found, skipping MP3 conversion"
     return 1
   fi
@@ -1126,7 +1128,7 @@ convert_to_mp3() {
     
     # Run transcription if requested and transcribe command is available
     if [[ -f "$TRANSCRIBE_FILE" ]] || ((TRANSCRIBE == 1)); then
-      if command -v transcribe >/dev/null 2>&1; then
+      if command -v transcribe &>/dev/null; then
         info "Running transcription on: $(basename "$mp3_file")"
         if transcribe "$mp3_file"; then
           success 'Transcription completed'
@@ -1278,7 +1280,7 @@ parse_args() {
     -q|--quiet)      VERBOSE=0 ;;
     -h|--help|help)  show_help ;;
     -V|--version)    echo "$SCRIPT_NAME $VERSION"
-                     cat >&2 <<EOF
+                     cat >&2 <<'EOF'
 Copyright (C) 2024 Open Technology Foundation
 License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
 This is free software: you are free to change and redistribute it.
@@ -1311,7 +1313,7 @@ process_command() {
   local -- command=$1
   shift
   
-  case "$command" in
+  case $command in
     start)
       local -- prefix=''
       local -- resume_file=''

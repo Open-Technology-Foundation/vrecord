@@ -257,11 +257,11 @@ download_file() {
   info "Downloading $desc..."
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$dest" || die "Failed to download $desc"
+    curl -fsSL "$url" -o "$dest" || die "$E_ERROR" "Failed to download $desc"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$dest" || die "Failed to download $desc"
+    wget -q "$url" -O "$dest" || die "$E_ERROR" "Failed to download $desc"
   else
-    die 'Neither curl nor wget found. Please install one of them.'
+    die "$E_ERROR" 'Neither curl nor wget found. Please install one of them.'
   fi
 }
 
@@ -280,7 +280,7 @@ install_vrecord() {
     if [[ -f "$SCRIPT_DIR"/vrecord ]]; then
       src_file="$SCRIPT_DIR"/vrecord
     else
-      die 'vrecord not found in current directory'
+      die "$E_ERROR" 'vrecord not found in current directory'
     fi
   else
     src_file="/tmp/vrecord.$$"
@@ -571,7 +571,7 @@ main() {
 
   # Run installation steps
   check_dependencies
-  detect_completion_dir
+  detect_completion_dir || true  # completion dir is optional; never abort here
   create_directories
   install_vrecord
   install_vrecord_loop

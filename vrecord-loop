@@ -18,9 +18,9 @@ declare -i VERBOSE=${VERBOSE:-1}
 
 # Color Definitions
 if [[ -t 1 && -t 2 ]]; then
-  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
+  declare -r RED=$'\033[0;31m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
 else
-  declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
+  declare -r RED='' YELLOW='' CYAN='' NC=''
 fi
 
 # Utility Functions
@@ -98,7 +98,14 @@ run_recording_loop() {
 
     # Wait for any key
     info 'Recording... Press any key to stop (q to quit)'
-    read -rsn1 key
+    # Guard the read: on EOF / Ctrl-D, stop the active recording instead of
+    # letting set -e abort and orphan ffmpeg.
+    if ! read -rsn1 key; then
+      >&2 echo
+      warn 'Input closed - stopping recording and exiting.'
+      vrecord stop "${verbose_flag[@]}" || true
+      break
+    fi
     >&2 echo
 
 #    if [[ ${key,,} == q ]]; then
@@ -133,7 +140,6 @@ run_recording_loop() {
         info "Piping to: $CALL_APP"
         $CALL_APP < "$txt_file" || error 'CALL_APP command failed'
       fi
-      continue
     fi
 
     # Exit on 'q'
@@ -143,10 +149,13 @@ run_recording_loop() {
     fi
 
     info '--- Press Enter to start next recording, or q to quit ---'
-    read -rsn1 key
+    if ! read -rsn1 key; then
+      >&2 echo
+      info 'Input closed - exiting.'
+      break
+    fi
     >&2 echo
     if [[ "${key,,}" == q ]]; then
-      vrecord stop
       info 'Exiting'
       break
     fi
