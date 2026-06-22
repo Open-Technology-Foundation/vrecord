@@ -16,21 +16,30 @@
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
+# Lock PATH to standard locations: this installer re-executes itself under
+# sudo, so an inherited PATH must not be able to hijack the elevated process.
+# Capture the caller's PATH first for the --user advisory in check_path().
+declare -r ORIG_PATH=$PATH
+declare -rx PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # Script information
 declare -r VERSION=1.0.0
 declare -r SCRIPT_NAME='vrecord installer'
 
 # Colors for output (with TTY check)
 if [[ -t 1 && -t 2 ]]; then
-  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' BLUE=$'\033[0;34m' NOCOLOR=$'\033[0m'
+  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' BLUE=$'\033[0;34m' NC=$'\033[0m'
 else
-  declare -r RED='' GREEN='' YELLOW='' BLUE='' NOCOLOR=''
+  declare -r RED='' GREEN='' YELLOW='' BLUE='' NC=''
 fi
 
 # Default values
 declare -- INSTALL_MODE=system
 declare -i CHECK_DEPS=1 DEV_MODE=0 DRY_RUN=0
 declare -- SCRIPT_DIR=''
+
+# Temp files created during a remote install; removed by cleanup() on exit.
+declare -a TEMP_FILES=()
 
 # Installation paths
 declare -- USER_BIN_DIR="$HOME"/.local/bin
@@ -57,12 +66,23 @@ declare -ri E_NOPERM=77
 declare -ri E_CONFIG=78
 
 # Functions
-info() { echo "${BLUE}[INFO]${NOCOLOR} $*"; }
-success() { echo "${GREEN}[SUCCESS]${NOCOLOR} $*"; }
-warn() { echo "${YELLOW}[WARN]${NOCOLOR} $*" >&2; }
-error() { echo "${RED}[ERROR]${NOCOLOR} $*" >&2; }
+info() { echo "${BLUE}[INFO]${NC} $*" >&2; }
+success() { echo "${GREEN}[SUCCESS]${NC} $*" >&2; }
+warn() { echo "${YELLOW}[WARN]${NC} $*" >&2; }
+error() { echo "${RED}[ERROR]${NC} $*" >&2; }
 
 die() { (($# < 2)) || error "${@:2}"; exit "${1:-$E_ERROR}"; }
+
+# Remove any downloaded temp files on exit (normal, error, or interrupt).
+cleanup() {
+  local -i rc=$?
+  trap - INT TERM EXIT
+  local -- f
+  for f in "${TEMP_FILES[@]}"; do
+    rm -f "$f"
+  done
+  exit "$rc"
+}
 
 show_help() {
   cat <<HELP
@@ -141,6 +161,7 @@ detect_completion_dir() {
     /usr/local/share/bash-completion/completions
   )
 
+  local -- dir
   for dir in "${dirs[@]}"; do
     if [[ -d "$dir" ]]; then
       SYSTEM_COMPLETION_DIR="$dir"
@@ -154,7 +175,7 @@ detect_completion_dir() {
 
 # Check if running with sudo when needed
 check_sudo() {
-  if [[ "$INSTALL_MODE" == 'system' ]] && [[ "${EUID:-0}" -ne 0 ]]; then
+  if [[ "$INSTALL_MODE" == 'system' ]] && (( ${EUID:-0} != 0 )); then
     if command -v sudo >/dev/null 2>&1; then
       warn 'System installation requires sudo privileges'
       exec sudo "$0" "$@"
@@ -221,13 +242,14 @@ create_directories() {
   fi
 
   # Create directories
+  local -- dir
   for dir in "$bin_dir" "$completion_dir" "$config_dir"; do
     if [[ ! -d "$dir" ]]; then
       if ((DRY_RUN)); then
         info "[DRY RUN] Would create directory ${dir@Q}"
       else
         info "Creating directory ${dir@Q}"
-        mkdir -p "$dir"
+        mkdir -p "$dir" || die "$E_ERROR" "Failed to create directory ${dir@Q}"
       fi
     fi
   done
@@ -238,7 +260,7 @@ create_directories() {
       info "[DRY RUN] Would create directory ${data_dir@Q}"
     else
       info "Creating directory ${data_dir@Q}"
-      mkdir -p "$data_dir"
+      mkdir -p "$data_dir" || die "$E_ERROR" "Failed to create directory ${data_dir@Q}"
     fi
   fi
 }
@@ -283,7 +305,8 @@ install_vrecord() {
       die "$E_ERROR" 'vrecord not found in current directory'
     fi
   else
-    src_file="/tmp/vrecord.$$"
+    src_file=$(mktemp /tmp/vrecord.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
+    TEMP_FILES+=("$src_file")
     download_file "$VRECORD_URL" "$src_file" 'vrecord script'
   fi
 
@@ -293,11 +316,11 @@ install_vrecord() {
   else
     info "Installing vrecord to $bin_dir/vrecord"
     if ((DEV_MODE)); then
-      cp "$src_file" "$bin_dir"/vrecord
+      cp "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
     else
-      mv "$src_file" "$bin_dir"/vrecord
+      mv "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
     fi
-    chmod +x "$bin_dir"/vrecord
+    chmod +x "$bin_dir"/vrecord || die "$E_ERROR" "Failed to set execute bit on ${bin_dir@Q}/vrecord"
   fi
 }
 
@@ -320,7 +343,8 @@ install_vrecord_loop() {
       return 0
     fi
   else
-    src_file="/tmp/vrecord-loop.$$"
+    src_file=$(mktemp /tmp/vrecord-loop.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
+    TEMP_FILES+=("$src_file")
     download_file "$VRECORD_LOOP_URL" "$src_file" 'vrecord-loop script'
   fi
 
@@ -330,11 +354,11 @@ install_vrecord_loop() {
   else
     info "Installing vrecord-loop to $bin_dir/vrecord-loop"
     if ((DEV_MODE)); then
-      cp "$src_file" "$bin_dir"/vrecord-loop
+      cp "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
     else
-      mv "$src_file" "$bin_dir"/vrecord-loop
+      mv "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
     fi
-    chmod +x "$bin_dir"/vrecord-loop
+    chmod +x "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to set execute bit on ${bin_dir@Q}/vrecord-loop"
   fi
 }
 
@@ -360,7 +384,8 @@ install_completion() {
       return 0
     fi
   else
-    src_file=/tmp/vrecord-completion."$$".bash
+    src_file=$(mktemp /tmp/vrecord-completion.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
+    TEMP_FILES+=("$src_file")
     download_file "$COMPLETION_URL" "$src_file" 'bash completion'
   fi
 
@@ -370,9 +395,9 @@ install_completion() {
   else
     info "Installing bash completion to $completion_dir/vrecord"
     if ((DEV_MODE)); then
-      cp "$src_file" "$completion_dir"/vrecord
+      cp "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
     else
-      mv "$src_file" "$completion_dir"/vrecord
+      mv "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
     fi
   fi
 }
@@ -398,7 +423,8 @@ install_config() {
       return 0
     fi
   else
-    src_file=/tmp/vrecord-config."$$".sample
+    src_file=$(mktemp /tmp/vrecord-config.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
+    TEMP_FILES+=("$src_file")
     download_file "$CONFIG_SAMPLE_URL" "$src_file" 'sample config'
   fi
 
@@ -408,9 +434,9 @@ install_config() {
   else
     info "Installing sample config to ${config_file@Q}"
     if ((DEV_MODE)); then
-      cp "$src_file" "$config_file"
+      cp "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
     else
-      mv "$src_file" "$config_file"
+      mv "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
     fi
   fi
 }
@@ -443,7 +469,8 @@ install_beep() {
       return 0
     fi
   else
-    src_file=/tmp/vrecord-beep."$$".mp3
+    src_file=$(mktemp /tmp/vrecord-beep.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
+    TEMP_FILES+=("$src_file")
     download_file "$BEEP_URL" "$src_file" 'beep sound'
   fi
 
@@ -453,9 +480,9 @@ install_beep() {
   else
     info "Installing beep sound to ${beep_file@Q}"
     if ((DEV_MODE)); then
-      cp "$src_file" "$beep_file"
+      cp "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
     else
-      mv "$src_file" "$beep_file"
+      mv "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
     fi
   fi
 }
@@ -532,7 +559,7 @@ fi
 echo "vrecord has been uninstalled"
 UNINSTALL
 
-  chmod +x "$uninstall_script"
+  chmod +x "$uninstall_script" || die "$E_ERROR" "Failed to set execute bit on ${uninstall_script@Q}"
 }
 
 # Update PATH if needed
@@ -542,7 +569,7 @@ check_path() {
   if [[ "$INSTALL_MODE" == user ]]; then
     bin_dir=$USER_BIN_DIR
 
-    if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
+    if [[ ":$ORIG_PATH:" != *":$bin_dir:"* ]]; then
       echo
       warn "$bin_dir is not in your PATH"
       info 'Add this line to your ~/.bashrc or ~/.bash_profile:'
@@ -558,12 +585,13 @@ main() {
 
   # Parse arguments
   parse_args "$@"
+  readonly INSTALL_MODE CHECK_DEPS DEV_MODE DRY_RUN
 
   # Check sudo if needed
   check_sudo "$@"
 
-  echo "${GREEN}vrecord Installer${NOCOLOR}"
-  echo "=================="
+  echo "${GREEN}vrecord Installer${NC}" >&2
+  echo "==================" >&2
   info "Install mode: $INSTALL_MODE"
   ((DEV_MODE)) && info "Development mode: installing from ${SCRIPT_DIR@Q}" ||:
   ((DRY_RUN)) && warn 'DRY RUN MODE - no changes will be made' ||:
@@ -571,7 +599,7 @@ main() {
 
   # Run installation steps
   check_dependencies
-  detect_completion_dir || true  # completion dir is optional; never abort here
+  detect_completion_dir ||:  # completion dir is optional; never abort here
   create_directories
   install_vrecord
   install_vrecord_loop
@@ -606,5 +634,6 @@ main() {
   fi
 }
 
+trap cleanup INT TERM EXIT
 main "$@"
 #fin
