@@ -21,6 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 - **Continue recordings** - append to existing WAV files
 - **Automatic MP3** conversion (libmp3lame)
 - **Transcription** integration (optional)
+- **Playback** - play recordings with `xdg-open` (`vrecord play`)
 - **Beep notifications** - periodic audio reminder while recording
 - **Background operation** - recordings persist after terminal closes
 - **Secure** - input validation prevents injection and path traversal
@@ -37,6 +38,9 @@ vrecord stop
 
 # Stop and transcribe (-t, if transcribe tool is installed)
 vrecord stop -t
+
+# Play the most recent recording
+vrecord play
 
 # Your recording is saved in ~/Recordings/
 ```
@@ -70,6 +74,7 @@ vrecord-loop -q
 
 | Option | Description |
 |--------|-------------|
+| `-C, --call CMD` | Pipe each transcription to CMD (overrides `CALL_APP`) |
 | `-v, --verbose` | Enable verbose output (default) |
 | `-q, --quiet` | Suppress non-error output |
 | `-h, --help` | Show help |
@@ -130,11 +135,11 @@ The installer will:
 4. Enable bash completion:
    ```bash
    # System-wide
-   sudo cp .bash_completion /etc/bash_completion.d/vrecord
+   sudo cp vrecord-completion.bash /etc/bash_completion.d/vrecord
 
    # Or user-only
    mkdir -p ~/.local/share/bash-completion/completions
-   cp .bash_completion ~/.local/share/bash-completion/completions/vrecord
+   cp vrecord-completion.bash ~/.local/share/bash-completion/completions/vrecord
    ```
 
 5. (Optional) Configure settings:
@@ -218,6 +223,10 @@ vrecord list
 # List all files (not just WAV)
 vrecord list --all
 
+# Play a recording (most recent if no name given; .wav optional)
+vrecord play
+vrecord play voice_recording_20240115_143022
+
 # Skip MP3 conversion
 vrecord -n start
 vrecord stop  # Won't create MP3
@@ -250,6 +259,7 @@ vrecord -V
 | `stop` | Stop recording, create MP3 |
 | `status` | Show recording state and file info |
 | `list [--all]` | List WAV files (or all files with --all) |
+| `play [FILE]` | Play a recording with `xdg-open` (most recent if FILE omitted; `.wav` optional) |
 
 ### Start Options
 
@@ -398,7 +408,7 @@ vrecord implements several security measures:
 - **Bash 5.2+** (uses `inherit_errexit`, `extglob`, `nullglob`)
 - **FFmpeg** with PulseAudio support (`ffmpeg -devices | grep pulse`)
 - **PulseAudio** (`pactl`)
-- **Optional**: mediainfo (file info), gzip (log compression), transcribe (transcription)
+- **Optional**: mediainfo (file info), gzip (log compression), transcribe (transcription), xdg-open (playback)
 
 ## Development
 
@@ -409,6 +419,7 @@ vrecord implements several security measures:
 ./tests/test_vrecord.sh basic_commands   # Specific suite
 ./tests/test_vrecord.sh recording_basic
 ./tests/test_vrecord.sh pause_resume
+./tests/test_vrecord.sh play
 ```
 
 ### Code Standards

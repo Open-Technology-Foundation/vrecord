@@ -9,8 +9,9 @@
 #   - Continue/append to existing WAV recordings
 #   - Automatic MP3 conversion (libmp3lame)
 #   - Optional transcription integration
+#   - Playback of recordings via xdg-open
 #
-# Dependencies: ffmpeg (PulseAudio), pactl | Optional: mediainfo, transcribe
+# Dependencies: ffmpeg (PulseAudio), pactl | Optional: mediainfo, transcribe, xdg-open
 #
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
@@ -563,7 +564,8 @@ rotate_log() {
   fi
 }
 
-# clean_old_logs: Remove old log files from state directory
+# clean_old_logs: Remove old log files (STATE_DIR/logs, >30 days) and stale
+# session temp dirs left behind in /tmp (>7 days)
 clean_old_logs() {
   # Skip if STATE_DIR doesn't exist
   [[ -d "$STATE_DIR" ]] || return 0

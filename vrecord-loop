@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vquick - Quick voice recording with transcription
+# vrecord-loop - Quick voice recording with transcription
 # Interactive loop: record, transcribe, display, repeat
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
@@ -107,13 +107,6 @@ run_recording_loop() {
       break
     fi
     >&2 echo
-
-#    if [[ ${key,,} == q ]]; then
-#    	vrecord stop
-#      txt_file=$(ls -t "$RECORDING_DIR"/"$prefix"*.txt 2>/dev/null | head -1) || txt_file=''
-#    	info 'Recording stopped' "$txt_file"
-#      exit 0
-#    fi
 
     # Stop and transcribe
     vrecord stop "${verbose_flag[@]}"
