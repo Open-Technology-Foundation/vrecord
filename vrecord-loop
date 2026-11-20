@@ -4,13 +4,12 @@
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
-declare -r VERSION=1.1.0
+declare -r VERSION=1.2.0
 #shellcheck disable=SC2155
 declare -r SCRIPT_PATH=$(realpath -- "$0")
 declare -r SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # Configuration (can be modified by arguments or environment)
-declare -- RECORDING_DIR=${RECORDING_DIR:-"$HOME"/Recordings}
 declare -- CALL_APP=${CALL_APP:-}  # Optional: command to receive transcription (stdin or {{FILE}})
 
 # Runtime flags
@@ -70,10 +69,12 @@ check_prerequisites() {
 }
 
 check_not_recording() {
-  # Check if vrecord status indicates active recording
-  if ! vrecord status 2>&1 | grep -q 'No active recording'; then
-    die 1 'A recording is already in progress. Use "vrecord stop" first.'
-  fi
+  # Capture first: piping into 'grep -q' can kill vrecord with SIGPIPE, and
+  # pipefail would then report an idle recorder as busy.
+  local -- status
+  status=$(vrecord status 2>&1) || true
+  [[ "$status" == *'No active recording'* ]] \
+    || die 1 'A recording is in progress, paused or interrupted. Run "vrecord status".'
 }
 
 validate_prefix() {
@@ -83,7 +84,7 @@ validate_prefix() {
 
 run_recording_loop() {
   local -- prefix=$1
-  local -- key txt_file
+  local -- key wav_file txt_file cmd
   local -a verbose_flag=()
 
   if ((VERBOSE)); then
@@ -108,25 +109,30 @@ run_recording_loop() {
     fi
     >&2 echo
 
-    # Stop and transcribe
-    vrecord stop "${verbose_flag[@]}"
-
-    # Find and display the most recent transcription
-    # shellcheck disable=SC2012  # ls -t is safe here; filenames validated by vrecord
-    txt_file=$(ls -t "$RECORDING_DIR"/"$prefix"*.txt 2>/dev/null | head -1) || txt_file=''
+    # Stop and transcribe. vrecord prints the saved WAV path on stdout; the
+    # transcript (transcribe writes <stem>.txt) is derived from it, never
+    # guessed from a directory listing, which could pick a stale transcript.
+    wav_file=$(vrecord stop "${verbose_flag[@]}") || die 1 'vrecord stop failed'
+    txt_file=''
+    [[ -z "$wav_file" ]] || txt_file=${wav_file%.wav}.txt
 
     if [[ -n "$txt_file" && -f "$txt_file" ]]; then
       info '--- Transcription ---'
-      cat "$txt_file"
+      cat -- "$txt_file"
       >&2 echo
+    else
+      warn 'No transcription was produced for this recording.'
     fi
 
     # Optional: call external program with transcription
     if [[ -n "${CALL_APP:-}" && -n "$txt_file" && -f "$txt_file" ]]; then
       if [[ "$CALL_APP" == *'{{FILE}}'* ]]; then
-        # Template mode: substitute {{FILE}} with actual path
-        local -- cmd=${CALL_APP//\{\{FILE\}\}/$txt_file}
-        info "Running: $cmd"
+        # Template mode: {{FILE}} (bare or double-quoted) becomes a quoted
+        # reference to $txt_file, so eval expands the path as data and never
+        # parses it as shell code.
+        cmd=${CALL_APP//\"\{\{FILE\}\}\"/\{\{FILE\}\}}
+        cmd=${cmd//\{\{FILE\}\}/\"\$txt_file\"}
+        info "Running: ${CALL_APP//\{\{FILE\}\}/$txt_file}"
         eval "$cmd" || error 'CALL_APP command failed'
       else
         # Default: pipe transcription via stdin
@@ -175,7 +181,7 @@ main() {
   done
   [[ -n "$prefix" ]] || prefix=voice
 
-  readonly -- VERBOSE RECORDING_DIR CALL_APP
+  readonly -- VERBOSE CALL_APP
 
   check_prerequisites
   check_not_recording

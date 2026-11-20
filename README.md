@@ -1,6 +1,6 @@
 # vrecord - Voice Recorder with Resume Capability
 
-Command-line voice recorder for Linux with pause/resume via signals, continue/append to existing recordings, automatic MP3 conversion, and optional transcription.
+Command-line voice recorder for Linux with pause/resume, continue/append to existing recordings, automatic MP3 conversion, and optional transcription.
 
 ## Quick Install
 
@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/vrecord/
 
 ## Features
 
-- **Pause/resume** via SIGSTOP/SIGCONT signals
+- **Pause/resume** - paused time is never recorded; a paused session survives a reboot
 - **Continue recordings** - append to existing WAV files
 - **Automatic MP3** conversion (libmp3lame)
 - **Transcription** integration (optional)
@@ -196,6 +196,8 @@ vrecord pause
 vrecord resume
 ```
 
+Pause ends the current segment; resume records a new one, and `stop` merges them into a single WAV. While a recording is paused or interrupted (e.g. ffmpeg crashed), `start` refuses to begin another: run `resume` or `stop` first. `stop` saves whatever was recorded.
+
 ### Continue Previous Recordings
 
 ```bash
@@ -254,9 +256,9 @@ vrecord -V
 | `start [PREFIX]` | Start new recording (default prefix: voice_recording) |
 | `start -c` | Continue the most recent recording |
 | `start -r FILE` | Resume a specific WAV file |
-| `pause` | Pause active recording (SIGSTOP) |
-| `resume` | Resume paused recording (SIGCONT) |
-| `stop` | Stop recording, create MP3 |
+| `pause` | Pause recording (ends the current segment) |
+| `resume` | Resume recording into a new segment (merged on stop) |
+| `stop` | Stop recording, create MP3; prints the saved WAV path on stdout |
 | `status` | Show recording state and file info |
 | `list [--all]` | List WAV files (or all files with --all) |
 | `play [FILE]` | Play a recording with `xdg-open` (most recent if FILE omitted; `.wav` optional) |
@@ -279,7 +281,7 @@ vrecord -V
 
 | Option | Description |
 |--------|-------------|
-| `-n, --no-mp3` | Skip MP3 conversion |
+| `-n, --no-mp3` | Skip MP3 conversion (given at `start`, it holds until `stop`); also skips transcription |
 | `-b, --no-beep` | Disable periodic beep reminders |
 | `-v, --verbose` | Increase output verbosity |
 | `-q, --quiet` | Suppress non-error output |
@@ -290,7 +292,8 @@ vrecord -V
 
 - **Recordings**: `~/Recordings/`
 - **State files**: `~/.vrecord/`
-- **Temporary files**: `/tmp/vrecord.XXXXXX/`
+- **Active session**: `~/.vrecord/session/` (segments, logs; removed by a successful `stop`)
+- **Recovered sessions**: `~/.vrecord/recovered_*/` (kept after a failed merge; never deleted automatically)
 - **System beep file**: `/usr/local/share/vrecord/beep.mp3` (system installation)
 - **User beep file**: `~/.vrecord/beep.mp3` (user installation)
 
@@ -357,11 +360,11 @@ See `config.sample` for a complete example.
 ## How It Works
 
 1. **Recording**: FFmpeg captures audio from PulseAudio default input
-2. **Pause/Resume**: SIGSTOP suspends ffmpeg; SIGCONT resumes it
-3. **Continue/Resume**: New audio records to segment files, merged on stop using ffmpeg concat demuxer
-4. **State**: Session data stored in `/tmp/vrecord.XXXXXX/` (ffmpeg.pid, state, segments/)
+2. **Pause/Resume**: pause stops ffmpeg cleanly (SIGTERM); resume starts a new ffmpeg into the next segment file. ffmpeg is not suspended with SIGSTOP: the audio server buffers a suspended stream (about 24 s) and delivers it on resume, so short pauses would be recorded.
+3. **Continue/Resume**: New audio records to segment files, merged on stop using ffmpeg concat demuxer. The merged file is written beside the original and renamed over it, so the replacement is atomic.
+4. **State**: Session data stored in `~/.vrecord/session/` (state, ffmpeg.pid, segments/). Not `/tmp`, which is wiped at boot.
 5. **Locking**: flock(1) prevents concurrent instances; falls back to atomic rename
-6. **Stop sequence**: SIGCONT (if paused) → SIGTERM → wait → SIGKILL (timeout)
+6. **Stop sequence**: SIGTERM → wait → SIGKILL (timeout); a paused session has no recorder to stop
 7. **Conversion**: WAV → MP3 via libmp3lame at configured bitrate
 
 ## Tips
@@ -381,7 +384,7 @@ See `config.sample` for a complete example.
 
 ### FFmpeg errors
 - Verify FFmpeg has PulseAudio support: `ffmpeg -devices 2>&1 | grep pulse`
-- Check FFmpeg logs in `/tmp/vrecord.*/ffmpeg.log`
+- Check FFmpeg logs in `~/.vrecord/session/ffmpeg.log` (while a session is active)
 
 ### Permission errors
 - Ensure `~/Recordings/` directory is writable
@@ -420,7 +423,11 @@ vrecord implements several security measures:
 ./tests/test_vrecord.sh recording_basic
 ./tests/test_vrecord.sh pause_resume
 ./tests/test_vrecord.sh play
+./tests/test_vrecord.sh session_recovery # Stub-tool suites: no audio device needed
+./tests/test_vrecord.sh loop
 ```
+
+The recording suites need a live PulseAudio/PipeWire server and capture a few seconds from the default input. The `pause_segments`, `session_recovery`, `session_durability`, `loop`, `no_mp3` and `many_recordings` suites use stub tools from `tests/lib/stubs.sh` instead.
 
 ### Code Standards
 

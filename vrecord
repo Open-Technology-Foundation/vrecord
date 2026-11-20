@@ -5,7 +5,7 @@
 # License: GPL-3.0-or-later <https://gnu.org/licenses/gpl.html>
 #
 # Command-line voice recorder for Linux with:
-#   - Pause/resume via SIGSTOP/SIGCONT signals
+#   - Pause/resume: pause ends the current segment, resume records a new one
 #   - Continue/append to existing WAV recordings
 #   - Automatic MP3 conversion (libmp3lame)
 #   - Optional transcription integration
@@ -22,7 +22,7 @@ shopt -s inherit_errexit shift_verbose extglob nullglob
 declare -rx PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Script metadata
-declare -r VERSION=1.1.0
+declare -r VERSION=1.2.0
 #shellcheck disable=SC2155
 declare -r SCRIPT_PATH=$(realpath -- "$0")
 declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
@@ -170,8 +170,9 @@ declare -i BEEP_INTERVAL=${BEEP_INTERVAL:-60}                # Seconds between b
 declare -- BEEP_FILE=${BEEP_FILE:-"$STATE_DIR"/beep.mp3}     # Sound file path
 
 # Runtime state - initialized during execution
-declare -- TEMP_DIR=''  # Session temp dir: /tmp/vrecord.XXXXXX
-declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE TRANSCRIBE_FILE
+declare -- SESSION_DIR=''  # Session dir: $STATE_DIR/session (set by init_session)
+declare -- MERGE_TEMP=''   # Merge output being written; cleanup_on_exit removes it
+declare -- PID_FILE STATE_FILE SEGMENT_COUNT_FILE SEGMENTS_DIR LOCK_FILE BEEP_PID_FILE TRANSCRIBE_FILE NO_MP3_FILE
 
 # Command-line flags - set by option parsing
 declare -i NO_MP3=0      # --no-mp3: skip MP3 conversion
@@ -352,26 +353,24 @@ cleanup_on_exit() {
   # trap (signal -> cleanup_on_exit -> exit -> EXIT trap -> cleanup_on_exit).
   trap - INT TERM EXIT
 
+  # An interrupted merge: its partial output is useless (the original and the
+  # segments are untouched, so 'stop' can simply run again) and its random
+  # name would never be reused, so it would sit beside the recordings forever.
+  [[ -z "$MERGE_TEMP" ]] || rm -f -- "$MERGE_TEMP"
+
   # If we have an active recording PID, try to save it gracefully
-  if [[ -n "$TEMP_DIR" && -f "$TEMP_DIR"/ffmpeg.pid ]]; then
-    local -- pid=$(cat "$TEMP_DIR"/ffmpeg.pid 2>/dev/null)
+  if [[ -n "$SESSION_DIR" && -f "$SESSION_DIR"/ffmpeg.pid ]]; then
+    local -- pid=$(cat -- "$SESSION_DIR"/ffmpeg.pid 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       warn 'Recording continues in background'
       warn "Use '$SCRIPT_NAME stop' to stop recording"
     fi
   fi
   
+  # Nothing is deleted here: the session directory holds recorded audio, and
+  # read-only commands no longer create one.
   release_lock
-  
-  # Only remove the temp dir on abnormal exit when there is genuinely nothing
-  # to lose: no live recorder (ffmpeg.pid) AND no unmerged resume segments.
-  # Deleting a dir that still holds segments would destroy recorded audio.
-  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]] \
-     && [[ ! -f "$TEMP_DIR"/ffmpeg.pid ]] \
-     && ! compgen -G "$TEMP_DIR/segments/segment_*.wav" >/dev/null; then
-    rm -rf "$TEMP_DIR"
-  fi
-  
+
   exit $exit_code
 }
 
@@ -381,45 +380,46 @@ trap 'cleanup_on_exit' INT TERM EXIT
 
 # ============================================================================
 # STATE MANAGEMENT
-# Track recording sessions via temp directory with state files:
-#   ffmpeg.pid, state, segment_count, current_file, main_file, segments/
+# One session at a time, in $STATE_DIR/session with state files:
+#   state, ffmpeg.pid, segment_count, current_file, main_file, segments/
+# Not /tmp: a reboot must not lose a paused or interrupted recording (/tmp is
+# wiped at boot), and nothing in the session directory is ever auto-deleted.
 # ============================================================================
-get_recording_dir() {
-  local -- current_recording="$STATE_DIR"/current_recording
-  if [[ -f "$current_recording" ]]; then
-    cat "$current_recording"
-  else
-    echo
+
+# init_session: point the session file paths at $STATE_DIR/session. Creates
+# nothing, so read-only commands leave no state behind.
+init_session() {
+  SESSION_DIR="$STATE_DIR"/session
+  PID_FILE="$SESSION_DIR"/ffmpeg.pid
+  STATE_FILE="$SESSION_DIR"/state
+  SEGMENT_COUNT_FILE="$SESSION_DIR"/segment_count
+  SEGMENTS_DIR="$SESSION_DIR"/segments
+  BEEP_PID_FILE="$SESSION_DIR"/beep.pid
+  TRANSCRIBE_FILE="$SESSION_DIR"/transcribe
+  NO_MP3_FILE="$SESSION_DIR"/no_mp3
+}
+
+# preserve_session: move the session directory to $STATE_DIR/recovered_* so a
+# new recording can start while its audio stays available for manual recovery
+preserve_session() {
+  local -- dest="$STATE_DIR"/recovered_"$(get_timestamp)"_$$
+  stop_beep_process
+  if ! mv -T -- "$SESSION_DIR" "$dest"; then
+    error "Could not move ${SESSION_DIR@Q} aside; it is left in place"
+    return 1
   fi
+  error "Segments preserved in: $dest/segments"
 }
 
-# Function to set current recording temp dir
-set_recording_dir() {
-  local -- dir=$1
-  echo "$dir" > "$STATE_DIR"/current_recording
-}
-
-# Function to clear current recording
-clear_recording_dir() {
-  rm -f "$STATE_DIR"/current_recording
-}
-
-# init_temp_dir: Initialize or retrieve temporary directory for recording
-init_temp_dir() {
-  TEMP_DIR=$(get_recording_dir)
-  if [[ -z "$TEMP_DIR" || ! -d "$TEMP_DIR" ]]; then
-    TEMP_DIR=$(mktemp -d /tmp/"$SCRIPT_NAME".XXXXXX)
-    set_recording_dir "$TEMP_DIR"
+# create_session: create an empty session directory (start only, after the
+# caller has checked that no session exists). A leftover directory with no
+# state file is an interrupted start: it is moved aside, never deleted.
+create_session() {
+  if [[ -d "$SESSION_DIR" ]]; then
+    warn 'Found an incomplete session directory; moving it aside'
+    preserve_session || return 1
   fi
-  
-  PID_FILE="$TEMP_DIR"/ffmpeg.pid
-  STATE_FILE="$TEMP_DIR"/state
-  SEGMENT_COUNT_FILE="$TEMP_DIR"/segment_count
-  SEGMENTS_DIR="$TEMP_DIR"/segments
-  BEEP_PID_FILE="$TEMP_DIR"/beep.pid
-  TRANSCRIBE_FILE="$TEMP_DIR"/transcribe
-  
-  mkdir -p "$SEGMENTS_DIR"
+  mkdir -p -- "$SEGMENTS_DIR" || { error "Cannot create ${SEGMENTS_DIR@Q}"; return 1; }
 }
 
 # ============================================================================
@@ -513,16 +513,83 @@ validate_ffmpeg_process() {
   return 0
 }
 
-# get_last_recording: Find the most recently modified WAV file
-get_last_recording() {
-  local -- last_file
-  # Using find instead of ls for better handling of special characters in filenames
-  last_file=$(find "$RECORDING_DIR" -maxdepth 1 -name "*.wav" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
-  if [[ -n "$last_file" && -f "$last_file" ]]; then
-    echo "$last_file"
-  else
-    echo
+# session_exists: a recording session is in progress (recording or paused).
+# The state file decides this: a paused session has no ffmpeg process.
+session_exists() { [[ -f "$STATE_FILE" ]]; }
+
+# recorder_alive: the session's ffmpeg is running
+recorder_alive() {
+  local -- pid
+  pid=$(cat -- "$PID_FILE" 2>/dev/null || echo '')
+  [[ -n "$pid" ]] && validate_ffmpeg_process "$pid"
+}
+
+# start_capture: record from the default source into $1 with a background
+# ffmpeg. The state is set to 'recording' first, so a start interrupted at
+# any point is still a session that status and stop can see. Returns 1,
+# leaving no PID file, if ffmpeg exits at startup (e.g. no audio server);
+# the caller then restores or discards the session.
+start_capture() {
+  local -- out_file=$1
+  local -- log_file="$SESSION_DIR"/ffmpeg.log
+  check_log_before_write "$log_file"
+  # Callers run this under 'if !', which disables set -e in here, so every
+  # write is checked explicitly.
+  echo 'recording' > "$STATE_FILE" || { error "Cannot write ${STATE_FILE@Q}"; return 1; }
+  # file: makes ffmpeg read the operand as a path (it accepts no --)
+  ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" file:"$out_file" \
+         </dev/null >/dev/null 2>>"$log_file" &
+  local -- pid=$!
+  if ! echo "$pid" > "$PID_FILE"; then
+    # Without a PID file nothing could stop this recorder later
+    kill -TERM "$pid" 2>/dev/null || true
+    error "Cannot write ${PID_FILE@Q}"
+    return 1
   fi
+
+  # Small delay allows ffmpeg to initialize or fail fast
+  sleep 0.5
+  if ! validate_ffmpeg_process "$pid"; then
+    error "Failed to start recording! Check $log_file for details"
+    rm -f -- "$PID_FILE"
+    return 1
+  fi
+
+  # Informational only (status shows its size)
+  echo "$out_file" > "$SESSION_DIR"/current_file || warn "Cannot write ${SESSION_DIR@Q}/current_file"
+}
+
+# stop_capture: end the running ffmpeg with SIGTERM so it finalises the WAV
+# header, forcing SIGKILL after 10 s. A no-op when no recorder is running.
+stop_capture() {
+  local -- pid
+  pid=$(cat -- "$PID_FILE" 2>/dev/null || echo '')
+  if [[ -n "$pid" ]] && validate_ffmpeg_process "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    local -i wait_count=0
+    while kill -0 "$pid" 2>/dev/null && ((wait_count < 20)); do
+      sleep 0.5
+      wait_count+=1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      warn "Process didn't stop cleanly, forcing..."
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f -- "$PID_FILE"
+}
+
+# get_last_recording: Find the most recently modified WAV file
+# A plain loop, not 'find | sort | head -n1': under pipefail that pipeline died
+# with SIGPIPE (exit 141) once the listing outgrew one pipe write (~100 WAVs).
+# -nt compares mtimes to the nanosecond and handles any filename.
+get_last_recording() {
+  local -- file last_file=''
+  for file in "$RECORDING_DIR"/*.wav; do
+    [[ -f "$file" ]] || continue
+    [[ -n "$last_file" && ! "$file" -nt "$last_file" ]] || last_file=$file
+  done
+  echo "$last_file"
 }
 
 # ============================================================================
@@ -564,21 +631,18 @@ rotate_log() {
   fi
 }
 
-# clean_old_logs: Remove old log files (STATE_DIR/logs, >30 days) and stale
-# session temp dirs left behind in /tmp (>7 days)
+# clean_old_logs: Remove old log files (STATE_DIR/logs, >30 days). Session
+# directories are never reaped: they may hold audio that is not yet merged.
 clean_old_logs() {
   # Skip if STATE_DIR doesn't exist
   [[ -d "$STATE_DIR" ]] || return 0
-  
+
   local -- log_dir="$STATE_DIR"/logs
-  
+
   if [[ -d "$log_dir" ]]; then
     # Find and remove log files older than 30 days
     find "$log_dir" -name "*.log*" -type f -mtime +30 -delete 2>/dev/null || true
   fi
-  
-  # Clean up old temporary directories
-  find /tmp -maxdepth 1 -name "$SCRIPT_NAME.*" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 }
 
 # check_log_before_write: Check and rotate log before writing
@@ -699,7 +763,7 @@ stop_beep_process() {
 
 # start_recording: Begin new recording or continue an existing WAV file
 # New recordings: create ${prefix}_TIMESTAMP.wav in RECORDING_DIR
-# Resume/continue: record new segments to TEMP_DIR/segments/, merge on stop
+# Resume/continue: record new segments to SESSION_DIR/segments/, merge on stop
 # Args: $1=prefix, $2=resume_file, $3=continue_last_flag
 start_recording() {
   local -- filename_prefix=${1:-$DEFAULT_PREFIX}
@@ -723,12 +787,13 @@ start_recording() {
 
   check_dependencies
   acquire_lock || return 1
-  init_temp_dir
+  init_session
   
   local -- output_file=''
 
   # Check disk space
   check_disk_space "$RECORDING_DIR" 100 || return 1
+  check_disk_space "$STATE_DIR" 100 || return 1  # resume segments live here
 
   # Check if directory is writable
   if ! touch "$RECORDING_DIR/.test" 2>/dev/null; then
@@ -769,17 +834,25 @@ start_recording() {
     fi
   fi
 
-  if [[ -f "$PID_FILE" ]]; then
-    local -- pid=$(cat "$PID_FILE")
-    if validate_ffmpeg_process "$pid"; then
-      error 'Recording is already in progress!'
-      return 1
-    else
-      warn 'Found stale PID file, cleaning up...'
-      rm -f "$PID_FILE"
-    fi
+  if recorder_alive; then
+    error 'Recording is already in progress!'
+    return 1
   fi
+  # Never replace an existing session: a paused one has no recorder process,
+  # and an interrupted one (ffmpeg crashed) still holds unmerged audio.
+  if session_exists; then
+    if [[ $(cat -- "$STATE_FILE" 2>/dev/null) == paused ]]; then
+      error 'A recording is paused.' \
+            "Use '$SCRIPT_NAME resume' to continue it or '$SCRIPT_NAME stop' to finish it."
+    else
+      error 'The previous recording was interrupted (its recorder is no longer running).' \
+            "Run '$SCRIPT_NAME stop' to save it, then start again."
+    fi
+    return 1
+  fi
+  create_session || return 1
 
+  local -- capture_file=''
   if [[ -n "$resume_file" ]]; then
     # Resuming existing recording
     output_file="$resume_file"
@@ -787,29 +860,15 @@ start_recording() {
          "Original file size: $(du -h "$output_file" | cut -f1)"
 
     # Store the main file path for later merging
-    echo "$output_file" > "$TEMP_DIR"/main_file
+    echo "$output_file" > "$SESSION_DIR"/main_file
 
     # Get or initialize segment count
     local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
     segment_count+=1
-    local -- segment_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
-
-    info "Recording new segment ${segment_file@Q}"
-
-    # Start recording the new segment
-    local -- log_file="$TEMP_DIR"/ffmpeg.log
-    check_log_before_write "$log_file"
-    ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$segment_file" \
-           </dev/null >/dev/null 2>>"$log_file" &
-
+    capture_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
     echo "$segment_count" > "$SEGMENT_COUNT_FILE"
-    echo "$segment_file" > "$TEMP_DIR"/current_file
-    
-    # Save transcribe flag if set
-    if ((TRANSCRIBE == 1)); then
-      echo '1' > "$TRANSCRIBE_FILE"
-    fi
 
+    info "Recording new segment ${capture_file@Q}"
   else
     # New recording
     local -- timestamp=$(get_timestamp)
@@ -819,39 +878,26 @@ start_recording() {
     info 'Starting new recording...' \
          "Output file ${output_file@Q}"
 
-    # Start ffmpeg for new recording
-    local -- log_file="$TEMP_DIR"/ffmpeg.log
-    check_log_before_write "$log_file"
-    ffmpeg -f pulse -i default -acodec "$AUDIO_FORMAT" -ar "$SAMPLE_RATE" -ac "$CHANNELS" "$output_file" \
-           </dev/null >/dev/null 2>>"$log_file" &
-
     echo '0' > "$SEGMENT_COUNT_FILE"
-    echo "$output_file" > "$TEMP_DIR"/main_file
-    echo "$output_file" > "$TEMP_DIR"/current_file
-    [[ ! -d "$SEGMENTS_DIR" ]] || rm -rf "${SEGMENTS_DIR:?}"/*
-    
-    # Save transcribe flag if set
-    if ((TRANSCRIBE == 1)); then
-      echo '1' > "$TRANSCRIBE_FILE"
-    fi
+    echo "$output_file" > "$SESSION_DIR"/main_file
+    capture_file=$output_file
   fi
 
-  # Save the PID and verify process started
-  local -- new_pid=$!
-  echo "$new_pid" > "$PID_FILE"
-  
-  # Verify ffmpeg started successfully
-  # Small delay allows ffmpeg to initialize or fail fast
-  sleep 0.5
-  if ! validate_ffmpeg_process "$new_pid"; then
-    error "Failed to start recording! Check $TEMP_DIR/ffmpeg.log for details"
-    rm -f "$PID_FILE"
+  # Save the transcribe and no-MP3 flags: stop runs as a separate invocation
+  if ((TRANSCRIBE == 1)); then
+    echo '1' > "$TRANSCRIBE_FILE"
+  fi
+  if ((NO_MP3 == 1)); then
+    echo '1' > "$NO_MP3_FILE"
+  fi
+
+  # The session was created by this run and holds no audio yet: discard it
+  if ! start_capture "$capture_file"; then
+    cleanup_files
     return 1
   fi
-  
-  echo 'recording' > "$STATE_FILE"
 
-  info "Recording started. PID: $new_pid" \
+  info "Recording started. PID: $(cat -- "$PID_FILE")" \
        "Use '$SCRIPT_NAME stop' to stop recording"
   
   # Start beep notifications
@@ -860,15 +906,16 @@ start_recording() {
   release_lock
 }
 
-# pause_recording: Suspend ffmpeg process with SIGSTOP signal
-# Recording can be resumed later with SIGCONT via resume_recording()
+# pause_recording: End the current segment; resume_recording() starts a new
+# one, and stop merges them. ffmpeg is not SIGSTOPped: a stopped recorder
+# leaves the audio server buffering, and up to ~24 s of "paused" audio was
+# handed over on resume and recorded.
 pause_recording() {
   acquire_lock || return 1
-  init_temp_dir
-  
-  [[ -f "$PID_FILE" ]] || { error 'No active recording found!'; release_lock; return 1; }
+  init_session
 
-  local -- pid=$(cat "$PID_FILE")
+  session_exists || { error 'No active recording found!'; release_lock; return 1; }
+
   local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
 
   if [[ "$state" == paused ]]; then
@@ -877,14 +924,13 @@ pause_recording() {
     return 1
   fi
 
-  if validate_ffmpeg_process "$pid"; then
+  if recorder_alive; then
     info 'Pausing recording...'
-    kill -STOP "$pid"
-    echo 'paused' > "$STATE_FILE"
-    
     # Stop beep notifications while paused
     stop_beep_process
-    
+    stop_capture
+    echo 'paused' > "$STATE_FILE"
+
     info "Recording paused. Use 'resume' to continue."
   else
     # The recorder is gone; finalize and recover any segments rather than
@@ -896,18 +942,17 @@ pause_recording() {
   release_lock
 }
 
-# resume_recording: Continue paused ffmpeg process with SIGCONT signal
+# resume_recording: Record a new segment after a pause (merged on stop)
 resume_recording() {
   acquire_lock || return 1
-  init_temp_dir
-  
-  if [[ ! -f "$PID_FILE" ]]; then
+  init_session
+
+  if ! session_exists; then
     error 'No active recording found!'
     release_lock
     return 1
   fi
 
-  local -- pid=$(cat "$PID_FILE")
   local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
 
   if [[ "$state" == recording ]]; then
@@ -916,22 +961,25 @@ resume_recording() {
     return 1
   fi
 
-  if validate_ffmpeg_process "$pid"; then
-    info 'Resuming recording...'
-    kill -CONT "$pid"
-    echo 'recording' > "$STATE_FILE"
-    
-    # Restart beep notifications
-    start_beep_process
-    
-    info 'Recording resumed.'
-  else
-    # The recorder is gone; finalize and recover any segments rather than
-    # deleting them (the old code ran cleanup_files here, losing the audio).
-    finalize_orphaned_session || return 1
-    return 0
-  fi
+  # The segment count advances only once ffmpeg is confirmed running, so a
+  # failed resume leaves the session paused and intact.
+  local -i segment_count=$(cat -- "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
+  segment_count+=1
+  local -- segment_file="$SEGMENTS_DIR"/segment_"$segment_count".wav
 
+  info 'Resuming recording...'
+  if ! start_capture "$segment_file"; then
+    rm -f -- "$segment_file"
+    echo 'paused' > "$STATE_FILE"
+    release_lock
+    return 1
+  fi
+  echo "$segment_count" > "$SEGMENT_COUNT_FILE"
+
+  # Restart beep notifications
+  start_beep_process
+
+  info 'Recording resumed.'
   release_lock
 }
 
@@ -946,12 +994,15 @@ merge_segments() {
   local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
   
   ((segment_count)) || return 0  # No segments to merge
+  # With no main file the segments cannot be merged: fail, so the caller
+  # keeps them (preserve_session) instead of cleaning the session up
+  [[ -n "$main_file" ]] || { error 'This session has no main recording to merge into'; return 1; }
 
   info 'Merging segments with original recording...'
 
   # Create concat demuxer input file for ffmpeg
   # Format: each line contains "file '/path/to/file.wav'"
-  local -- filelist="$TEMP_DIR"/filelist.txt
+  local -- filelist="$SESSION_DIR"/filelist.txt
   echo "file '$main_file'" > "$filelist"
 
   # Add all segments to the list
@@ -964,28 +1015,42 @@ merge_segments() {
     fi
   done
 
-  # Create merged file
-  local -- temp_merged="$TEMP_DIR"/merged_$(basename "$main_file")
+  # Merge into a temp file beside the main file, so replacing it is an atomic
+  # same-filesystem rename, never a copy that an interruption could truncate.
+  # Dot-prefixed and not *.wav, so list/play/start -c ignore it; -f wav because
+  # the name has no .wav extension. mktemp creates it 0600, so the original
+  # recording's mode is copied onto it before the rename.
+  local -- temp_merged
+  temp_merged=$(mktemp -- "${main_file%/*}"/.vrecord-merge.XXXXXX) || {
+    error "Cannot create a merge file beside ${main_file@Q}"
+    return 1
+  }
+  MERGE_TEMP=$temp_merged
 
-  local -- log_file="$TEMP_DIR"/merge.log
+  local -- log_file="$SESSION_DIR"/merge.log
   check_log_before_write "$log_file"
-  if ffmpeg -f concat -safe 0 -i "$filelist" -c copy "$temp_merged" -y \
+  # file: makes ffmpeg read the operand as a path (it accepts no --)
+  if ffmpeg -y -f concat -safe 0 -i "$filelist" -c copy -f wav file:"$temp_merged" \
             </dev/null >/dev/null 2>>"$log_file"; then
+    chmod --reference="$main_file" -- "$temp_merged" \
+      || warn "Could not copy the permissions of ${main_file@Q}"
     # Replace original with merged version
-    mv "$temp_merged" "$main_file" || {
+    mv -f -- "$temp_merged" "$main_file" || {
+      MERGE_TEMP=''  # the merged output is the only complete copy: keep it
       error "Failed to replace ${main_file@Q} with merged output (kept ${temp_merged@Q})"
       return 1
     }
+    MERGE_TEMP=''
     info "Successfully merged segments into ${main_file@Q}"
 
     # Clean up segment files
     rm -f "$SEGMENTS_DIR"/segment_*.wav
     rm -f "$filelist"
   else
+    rm -f -- "$temp_merged"
+    MERGE_TEMP=''
     error 'Error: Failed to merge segments!' \
-          "Original file preserved: $main_file" \
-          "Segments preserved in: $SEGMENTS_DIR" \
-          "Check $TEMP_DIR/merge.log for details"
+          "Original file preserved: $main_file"
     return 1
   fi
 }
@@ -993,21 +1058,21 @@ merge_segments() {
 # finalize_orphaned_session: called when the recorder process is gone
 # (crash / OOM / external kill). Merge any resume segments into the original
 # BEFORE cleanup so freshly recorded audio is not lost, then clear session
-# state and release the lock. Returns 1 (leaving segments in place) on merge
-# failure, 0 otherwise.
+# state and release the lock. Returns 1 on merge failure, after moving the
+# session (segments + merge.log) aside to $STATE_DIR/recovered_*; 0 otherwise.
 finalize_orphaned_session() {
   warn 'Recording process not found (it may have already exited).'
   stop_beep_process
 
   local -- main_file=''
-  main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null || echo '')
+  main_file=$(cat -- "$SESSION_DIR"/main_file 2>/dev/null || echo '')
   local -i segment_count=0
   segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
 
-  if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
+  if ((segment_count > 0)); then
     merge_segments "$main_file" || {
-      error 'Merge failed - segments preserved for recovery; see merge.log.'
-      clear_recording_dir
+      error 'Merge failed - segments and merge.log kept for recovery.'
+      preserve_session || true
       release_lock
       return 1
     }
@@ -1019,61 +1084,38 @@ finalize_orphaned_session() {
 }
 
 # stop_recording: End recording session and finalize output files
-# Signal sequence: SIGCONT (if paused) → SIGTERM → wait → SIGKILL (timeout)
-# Then: merge segments (if any), convert to MP3 (unless --no-mp3), transcribe (if -t)
+# Ends the recorder if one is running (a paused session has none), then:
+# merge segments (if any), convert to MP3 (unless --no-mp3), transcribe (if -t)
 stop_recording() {
   acquire_lock || return 1
-  init_temp_dir
-  
-  if [[ ! -f "$PID_FILE" ]]; then
+  init_session
+
+  if ! session_exists; then
     error 'No active recording found!'
     release_lock
     return 1
   fi
 
-  local -- pid=$(cat "$PID_FILE")
-  local -- main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null)
-  local -- current_file=$(cat "$TEMP_DIR"/current_file 2>/dev/null)
-  local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
+  local -- state=$(cat -- "$STATE_FILE" 2>/dev/null || echo 'unknown')
+  local -- main_file=$(cat -- "$SESSION_DIR"/main_file 2>/dev/null)
+  local -i segment_count=$(cat -- "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
 
-  if validate_ffmpeg_process "$pid"; then
+  if [[ "$state" == paused ]] || recorder_alive; then
     info 'Stopping recording...'
-    
+
     # Stop beep notifications
     stop_beep_process
-
-    # Resume if paused before stopping
-    # This ensures we get a clean shutdown of the recording
-    local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
-    if [[ "$state" == "paused" ]]; then
-      kill -CONT "$pid" 2>/dev/null
-      sleep 0.5  # Allow process to resume
-    fi
-
-    # Send SIGTERM to ffmpeg for clean shutdown
-    kill -TERM "$pid" 2>/dev/null
-
-    # Wait for process to finish with timeout
-    local -i wait_count=0
-    while kill -0 "$pid" 2>/dev/null && ((wait_count < 20)); do
-      sleep 0.5
-      wait_count+=1
-    done
-
-    if kill -0 "$pid" 2>/dev/null; then
-      warn "Process didn't stop cleanly, forcing..."
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
+    stop_capture
 
     info 'Recording stopped.'
 
     # If we have segments, merge them. Guard with `|| ` so a merge failure
-    # cannot trip set -e and skip the cleanup/lock-release epilogue below
-    # (which would leave a stale session that a later stop would delete).
-    if ((segment_count > 0)) && [[ -n "$main_file" ]]; then
+    # cannot trip set -e and skip the lock-release epilogue below. On failure
+    # the session is moved aside, so a new recording can start meanwhile.
+    if ((segment_count > 0)); then
       merge_segments "$main_file" || {
-        error 'Merge failed - segments preserved for recovery; see merge.log.'
-        clear_recording_dir
+        error 'Merge failed - segments and merge.log kept for recovery.'
+        preserve_session || true
         release_lock
         return 1
       }
@@ -1090,10 +1132,14 @@ stop_recording() {
         info "File size: $(du -h "$main_file" | cut -f1)"
       fi
       
-      # Convert to MP3 unless --no-mp3 was specified. Guard the call so a
-      # conversion failure cannot skip the cleanup/lock-release epilogue.
-      if ((NO_MP3 == 0)) && [[ -n "$main_file" && -f "$main_file" ]]; then
+      # Convert to MP3 unless --no-mp3 was given to start or to stop. Guard
+      # the call so a conversion failure cannot skip the cleanup/lock-release
+      # epilogue. Transcription runs on the MP3, so -n also skips it.
+      [[ ! -f "$NO_MP3_FILE" ]] || NO_MP3=1
+      if ((NO_MP3 == 0)); then
         convert_to_mp3 "$main_file" || warn 'MP3 conversion failed; WAV is intact.'
+      elif [[ -f "$TRANSCRIBE_FILE" ]] || ((TRANSCRIBE == 1)); then
+        warn 'Transcription skipped: it runs on the MP3, and --no-mp3 is in effect.'
       fi
     fi
   else
@@ -1105,6 +1151,10 @@ stop_recording() {
 
   cleanup_files
   release_lock
+
+  # Report the saved recording on stdout (all messages go to stderr), so
+  # callers such as vrecord-loop never have to guess which file was written.
+  [[ ! -f "$main_file" ]] || printf '%s\n' "$main_file"
 }
 
 # convert_to_mp3: Convert WAV recording to MP3 format
@@ -1119,7 +1169,7 @@ convert_to_mp3() {
   
   info "Converting to MP3: $(basename -- "$mp3_file")"
   
-  local -- log_file="$TEMP_DIR"/mp3_convert.log
+  local -- log_file="$SESSION_DIR"/mp3_convert.log
   check_log_before_write "$log_file"
   if ffmpeg -y -i "$wav_file" -codec:a libmp3lame -b:a "$MP3_BITRATE" "$mp3_file" \
             </dev/null >/dev/null 2>>"$log_file"; then
@@ -1132,7 +1182,8 @@ convert_to_mp3() {
     if [[ -f "$TRANSCRIBE_FILE" ]] || ((TRANSCRIBE == 1)); then
       if command -v transcribe &>/dev/null; then
         info "Running transcription on: $(basename "$mp3_file")"
-        if transcribe "$mp3_file"; then
+        # stdout is reserved for stop's result line (the saved WAV path)
+        if transcribe -- "$mp3_file" >&2; then
           success 'Transcription completed'
         else
           warn 'Transcription failed'
@@ -1143,26 +1194,25 @@ convert_to_mp3() {
     fi
   else
     error 'Failed to convert to MP3' \
-          "Check $TEMP_DIR/mp3_convert.log for details"
+          "Check $SESSION_DIR/mp3_convert.log for details"
     return 1
   fi
 }
 
 # show_status: Display current recording status and statistics
 show_status() {
-  init_temp_dir
-  
-  if [[ -f "$PID_FILE" ]]; then
-    local -- pid=$(cat "$PID_FILE")
+  init_session
+
+  if session_exists; then
     local -- state=$(cat "$STATE_FILE" 2>/dev/null || echo 'unknown')
-    local -- main_file=$(cat "$TEMP_DIR"/main_file 2>/dev/null)
-    local -- current_file=$(cat "$TEMP_DIR"/current_file 2>/dev/null)
+    local -- main_file=$(cat -- "$SESSION_DIR"/main_file 2>/dev/null)
+    local -- current_file=$(cat -- "$SESSION_DIR"/current_file 2>/dev/null)
     local -i segment_count=$(cat "$SEGMENT_COUNT_FILE" 2>/dev/null || echo '0')
 
-    if validate_ffmpeg_process "$pid"; then
-      info "Recording Status: $state" \
-           "PID: $pid" \
-           "Main file: $main_file"
+    if [[ "$state" == paused ]] || recorder_alive; then
+      info "Recording Status: $state"
+      [[ "$state" == paused ]] || info "PID: $(cat -- "$PID_FILE")"
+      info "Main file: $main_file"
       if ((segment_count > 0)); then
         info "Resume segments: $segment_count" \
              "Original file size: $(du -h "$main_file" 2>/dev/null | cut -f1 || echo "Unknown")"
@@ -1176,30 +1226,30 @@ show_status() {
       fi
       
       # Check for errors in log
-      if [[ -f "$TEMP_DIR"/ffmpeg.log ]] && [[ -s "$TEMP_DIR"/ffmpeg.log ]]; then
-        local -- last_error=$(tail -n 5 "$TEMP_DIR"/ffmpeg.log 2>/dev/null | grep -i error | tail -n 1)
+      if [[ -f "$SESSION_DIR"/ffmpeg.log ]] && [[ -s "$SESSION_DIR"/ffmpeg.log ]]; then
+        local -- last_error=$(tail -n 5 -- "$SESSION_DIR"/ffmpeg.log 2>/dev/null | grep -i error | tail -n 1)
         [[ -z "$last_error" ]] || warn "Recent error: $last_error"
       fi
     else
-      error 'No active recording (stale PID file found)'
-      cleanup_files
+      # The recorder died (crash, OOM kill, reboot). status is read-only:
+      # leave everything in place so 'stop' can merge what was recorded.
+      error 'Recording interrupted: the recorder process is no longer running.' \
+            "Main file: $main_file" \
+            "Run '$SCRIPT_NAME stop' to save what was recorded."
     fi
   else
     error 'No active recording'
   fi
 }
 
-# cleanup_files: Remove all temporary files and clear state
+# cleanup_files: End the session by removing its directory. Called only once
+# its audio is safe: merged into the main file, or never recorded.
 cleanup_files() {
   # Stop beep process if running
   stop_beep_process
-  
-  rm -f "$PID_FILE" "$STATE_FILE" "$SEGMENT_COUNT_FILE" "$BEEP_PID_FILE" "$TRANSCRIBE_FILE"
-  rm -f "$TEMP_DIR"/current_file "$TEMP_DIR"/main_file
-  rm -f "$TEMP_DIR"/filelist.txt "$TEMP_DIR"/*.log
-  clear_recording_dir
-  if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
-    rm -rf "$TEMP_DIR"
+
+  if [[ -n "$SESSION_DIR" && -d "$SESSION_DIR" ]]; then
+    rm -rf -- "$SESSION_DIR" || warn "Could not remove ${SESSION_DIR@Q}"
   fi
 }
 
@@ -1214,9 +1264,9 @@ Commands:
   start [PREFIX]    Start new recording (default prefix: voice_recording)
   start -c          Continue the most recent recording
   start -r FILE     Resume a specific WAV file
-  pause             Pause active recording (SIGSTOP)
-  resume            Resume paused recording (SIGCONT)
-  stop              Stop recording, create MP3
+  pause             Pause recording (ends the current segment)
+  resume            Resume recording into a new segment (merged on stop)
+  stop              Stop recording, create MP3; prints the saved WAV path on stdout
   status            Show recording state and file info
   list [--all]      List WAV files (or all files with --all)
   play [FILE]       Play a recording (most recent if FILE omitted; .wav optional)
