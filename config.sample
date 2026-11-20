@@ -23,22 +23,25 @@ MP3_BITRATE="192k"
 # Common values: pcm_s16le (16-bit), pcm_s24le (24-bit), pcm_s32le (32-bit)
 AUDIO_FORMAT="pcm_s16le"
 
-# Sample rate in Hz (common values: 44100, 48000, 96000)
+# Sample rate in Hz (common values: 44100, 48000, 96000). AUDIO_FORMAT,
+# SAMPLE_RATE and CHANNELS apply to new recordings: continuing a recording
+# always uses that file's own format.
 SAMPLE_RATE=44100
 
 # Number of channels (1=mono, 2=stereo)
 CHANNELS=2
 
-# Minimum free disk space required (in MB)
+# Minimum free disk space required to start (in MB), on the recordings
+# directory and on the state directory (which holds resume segments)
 MIN_DISK_SPACE_MB=100
 
-# Log file management
+# Log file management (ffmpeg, merge and MP3 logs in $STATE_DIR/logs)
 LOG_MAX_SIZE_MB=10    # Maximum size of a single log file
 LOG_MAX_FILES=5       # Number of old log files to keep
 
 # Beep notification settings
 BEEP_ENABLED=1        # Enable beep notifications (0=disabled, 1=enabled)
-BEEP_INTERVAL=60      # Seconds between beeps during recording
+BEEP_INTERVAL=60      # Seconds between beeps during recording (at least 1)
 BEEP_FILE="$STATE_DIR/beep.mp3"  # Path to beep sound file
 
 # Note: For system installations, beep.mp3 is installed to:

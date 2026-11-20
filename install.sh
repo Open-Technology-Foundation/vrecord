@@ -9,7 +9,7 @@
 #   --user      Install to user directory (~/.local/bin)
 #   --system    Install system-wide (default)
 #   --no-deps   Skip dependency check
-#   --dev       Install from current directory (for development)
+#   --dev       Install from this script's directory (for development)
 #   --dry-run   Show what would be installed without doing it
 #   --help      Show this help message
 
@@ -23,7 +23,7 @@ declare -r ORIG_PATH=$PATH
 declare -rx PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Script information
-declare -r VERSION=1.2.0
+declare -r VERSION=1.3.0
 declare -r SCRIPT_NAME='vrecord installer'
 
 # Colors for output (with TTY check)
@@ -79,7 +79,7 @@ cleanup() {
   trap - INT TERM EXIT
   local -- f
   for f in "${TEMP_FILES[@]}"; do
-    rm -f "$f"
+    rm -f -- "$f"
   done
   exit "$rc"
 }
@@ -98,7 +98,7 @@ OPTIONS:
   --user      Install to user directory (~/.local/bin)
   --system    Install system-wide (default)
   --no-deps   Skip dependency check
-  --dev       Install from current directory (for development)
+  --dev       Install from this script's directory (for development)
   --dry-run   Show what would be installed without doing it
   --help      Show this help message
 
@@ -109,7 +109,7 @@ EXAMPLES:
   # User installation (no sudo required)
   ./install.sh --user
 
-  # Development installation from current directory
+  # Development installation from this checkout
   ./install.sh --dev
 
   # One-liner remote installation
@@ -178,7 +178,7 @@ check_sudo() {
   if [[ "$INSTALL_MODE" == 'system' ]] && (( ${EUID:-0} != 0 )); then
     if command -v sudo >/dev/null 2>&1; then
       warn 'System installation requires sudo privileges'
-      exec sudo "$0" "$@"
+      exec sudo -- "$0" "$@"
     else
       die $E_NOPERM 'System installation requires root privileges'
     fi
@@ -249,7 +249,7 @@ create_directories() {
         info "[DRY RUN] Would create directory ${dir@Q}"
       else
         info "Creating directory ${dir@Q}"
-        mkdir -p "$dir" || die "$E_ERROR" "Failed to create directory ${dir@Q}"
+        mkdir -p -- "$dir" || die "$E_ERROR" "Failed to create directory ${dir@Q}"
       fi
     fi
   done
@@ -260,7 +260,7 @@ create_directories() {
       info "[DRY RUN] Would create directory ${data_dir@Q}"
     else
       info "Creating directory ${data_dir@Q}"
-      mkdir -p "$data_dir" || die "$E_ERROR" "Failed to create directory ${data_dir@Q}"
+      mkdir -p -- "$data_dir" || die "$E_ERROR" "Failed to create directory ${data_dir@Q}"
     fi
   fi
 }
@@ -279,9 +279,9 @@ download_file() {
   info "Downloading $desc..."
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$dest" || die "$E_ERROR" "Failed to download $desc"
+    curl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$dest" || die "$E_ERROR" "Failed to download $desc"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$dest" || die "$E_ERROR" "Failed to download $desc"
+    wget -q --timeout=30 --tries=3 "$url" -O "$dest" || die "$E_ERROR" "Failed to download $desc"
   else
     die "$E_ERROR" 'Neither curl nor wget found. Please install one of them.'
   fi
@@ -302,7 +302,7 @@ install_vrecord() {
     if [[ -f "$SCRIPT_DIR"/vrecord ]]; then
       src_file="$SCRIPT_DIR"/vrecord
     else
-      die "$E_ERROR" 'vrecord not found in current directory'
+      die "$E_ERROR" "vrecord not found in ${SCRIPT_DIR@Q}"
     fi
   else
     src_file=$(mktemp /tmp/vrecord.XXXXXX) || die "$E_ERROR" 'Failed to create temp file'
@@ -316,11 +316,11 @@ install_vrecord() {
   else
     info "Installing vrecord to $bin_dir/vrecord"
     if ((DEV_MODE)); then
-      cp "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
+      cp -- "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
     else
-      mv "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
+      mv -- "$src_file" "$bin_dir"/vrecord || die "$E_ERROR" "Failed to install vrecord to ${bin_dir@Q}"
     fi
-    chmod 755 "$bin_dir"/vrecord || die "$E_ERROR" "Failed to set permissions on ${bin_dir@Q}/vrecord"
+    chmod -- 755 "$bin_dir"/vrecord || die "$E_ERROR" "Failed to set permissions on ${bin_dir@Q}/vrecord"
   fi
 }
 
@@ -339,7 +339,7 @@ install_vrecord_loop() {
     if [[ -f "$SCRIPT_DIR"/vrecord-loop ]]; then
       src_file="$SCRIPT_DIR"/vrecord-loop
     else
-      warn 'vrecord-loop not found in current directory'
+      warn "vrecord-loop not found in ${SCRIPT_DIR@Q}"
       return 0
     fi
   else
@@ -354,11 +354,11 @@ install_vrecord_loop() {
   else
     info "Installing vrecord-loop to $bin_dir/vrecord-loop"
     if ((DEV_MODE)); then
-      cp "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
+      cp -- "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
     else
-      mv "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
+      mv -- "$src_file" "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to install vrecord-loop to ${bin_dir@Q}"
     fi
-    chmod 755 "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to set permissions on ${bin_dir@Q}/vrecord-loop"
+    chmod -- 755 "$bin_dir"/vrecord-loop || die "$E_ERROR" "Failed to set permissions on ${bin_dir@Q}/vrecord-loop"
   fi
 }
 
@@ -380,7 +380,7 @@ install_completion() {
     if [[ -f "$SCRIPT_DIR"/vrecord-completion.bash ]]; then
       src_file="$SCRIPT_DIR"/vrecord-completion.bash
     else
-      warn 'vrecord-completion.bash not found in current directory'
+      warn "vrecord-completion.bash not found in ${SCRIPT_DIR@Q}"
       return 0
     fi
   else
@@ -395,11 +395,11 @@ install_completion() {
   else
     info "Installing bash completion to $completion_dir/vrecord"
     if ((DEV_MODE)); then
-      cp "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
+      cp -- "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
     else
-      mv "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
+      mv -- "$src_file" "$completion_dir"/vrecord || die "$E_ERROR" "Failed to install completion to ${completion_dir@Q}"
     fi
-    chmod 644 "$completion_dir"/vrecord || die "$E_ERROR" "Failed to set permissions on ${completion_dir@Q}/vrecord"
+    chmod -- 644 "$completion_dir"/vrecord || die "$E_ERROR" "Failed to set permissions on ${completion_dir@Q}/vrecord"
   fi
 }
 
@@ -420,7 +420,7 @@ install_config() {
     if [[ -f "$SCRIPT_DIR"/config.sample ]]; then
       src_file="$SCRIPT_DIR"/config.sample
     else
-      warn 'config.sample not found in current directory'
+      warn "config.sample not found in ${SCRIPT_DIR@Q}"
       return 0
     fi
   else
@@ -435,11 +435,11 @@ install_config() {
   else
     info "Installing sample config to ${config_file@Q}"
     if ((DEV_MODE)); then
-      cp "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
+      cp -- "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
     else
-      mv "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
+      mv -- "$src_file" "$config_file" || die "$E_ERROR" "Failed to install config to ${config_file@Q}"
     fi
-    chmod 644 "$config_file" || die "$E_ERROR" "Failed to set permissions on ${config_file@Q}"
+    chmod -- 644 "$config_file" || die "$E_ERROR" "Failed to set permissions on ${config_file@Q}"
   fi
 }
 
@@ -467,7 +467,7 @@ install_beep() {
     if [[ -f "$SCRIPT_DIR"/beep.mp3 ]]; then
       src_file="$SCRIPT_DIR"/beep.mp3
     else
-      warn 'beep.mp3 not found in current directory'
+      warn "beep.mp3 not found in ${SCRIPT_DIR@Q}"
       return 0
     fi
   else
@@ -482,11 +482,11 @@ install_beep() {
   else
     info "Installing beep sound to ${beep_file@Q}"
     if ((DEV_MODE)); then
-      cp "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
+      cp -- "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
     else
-      mv "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
+      mv -- "$src_file" "$beep_file" || die "$E_ERROR" "Failed to install beep sound to ${beep_file@Q}"
     fi
-    chmod 644 "$beep_file" || die "$E_ERROR" "Failed to set permissions on ${beep_file@Q}"
+    chmod -- 644 "$beep_file" || die "$E_ERROR" "Failed to set permissions on ${beep_file@Q}"
   fi
 }
 
@@ -527,32 +527,32 @@ echo "Uninstalling vrecord..."
 # Remove binaries
 if [[ -f "$bin_dir"/vrecord ]]; then
   echo "Removing $bin_dir/vrecord"
-  ${sudo_cmd}rm -f "$bin_dir"/vrecord
+  ${sudo_cmd}rm -f -- "$bin_dir"/vrecord
 fi
 
 if [[ -f "$bin_dir"/vrecord-loop ]]; then
   echo "Removing $bin_dir/vrecord-loop"
-  ${sudo_cmd}rm -f "$bin_dir"/vrecord-loop
+  ${sudo_cmd}rm -f -- "$bin_dir"/vrecord-loop
 fi
 
 # Remove completion
 if [[ -f "$completion_dir"/vrecord ]]; then
   echo "Removing $completion_dir/vrecord"
-  ${sudo_cmd}rm -f "$completion_dir"/vrecord
+  ${sudo_cmd}rm -f -- "$completion_dir"/vrecord
 fi
 
 # Remove data directory (system installations only)
 if [[ "$INSTALL_MODE" == system ]] && [[ -d "$data_dir" ]]; then
   echo "Removing $data_dir"
-  ${sudo_cmd}rm -rf "$data_dir"
+  ${sudo_cmd}rm -rf -- "$data_dir"
 fi
 
 # Ask about config removal
 if [[ -d "\$HOME/.vrecord" ]]; then
   read -p "Remove configuration directory ~/.vrecord? [y/N] " -n 1 -r
-  echo
+  >&2 echo
   if [[ \$REPLY =~ ^[Yy]\$ ]]; then
-    rm -rf "\$HOME/.vrecord"
+    rm -rf -- "\$HOME/.vrecord"
     echo "Configuration removed"
   else
     echo "Configuration preserved at ~/.vrecord"
@@ -562,7 +562,7 @@ fi
 echo "vrecord has been uninstalled"
 UNINSTALL
 
-  chmod 755 "$uninstall_script" || die "$E_ERROR" "Failed to set permissions on ${uninstall_script@Q}"
+  chmod -- 755 "$uninstall_script" || die "$E_ERROR" "Failed to set permissions on ${uninstall_script@Q}"
 }
 
 # Update PATH if needed
@@ -573,7 +573,7 @@ check_path() {
     bin_dir=$USER_BIN_DIR
 
     if [[ ":$ORIG_PATH:" != *":$bin_dir:"* ]]; then
-      echo
+      >&2 echo
       warn "$bin_dir is not in your PATH"
       info 'Add this line to your ~/.bashrc or ~/.bash_profile:'
       info "  export PATH=\"\$PATH:$bin_dir\""
@@ -583,8 +583,11 @@ check_path() {
 
 # Main installation function
 main() {
-  # Get script directory for dev mode
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Get script directory for dev mode (piped into bash, BASH_SOURCE is 'main'
+  # and this resolves to the current directory)
+  SCRIPT_DIR=$(dirname -- "${BASH_SOURCE[0]}") || die "$E_ERROR" 'Cannot find the script directory'
+  SCRIPT_DIR=$(cd -- "$SCRIPT_DIR" && pwd) \
+    || die "$E_ERROR" "Cannot resolve the script directory ${SCRIPT_DIR@Q}"
 
   # Parse arguments
   parse_args "$@"
@@ -598,7 +601,7 @@ main() {
   info "Install mode: $INSTALL_MODE"
   ((DEV_MODE)) && info "Development mode: installing from ${SCRIPT_DIR@Q}" ||:
   ((DRY_RUN)) && warn 'DRY RUN MODE - no changes will be made' ||:
-  echo
+  >&2 echo
 
   # Run installation steps
   check_dependencies
@@ -613,7 +616,7 @@ main() {
   check_path
 
   # Success message
-  echo
+  >&2 echo
   if ((DRY_RUN)); then
     success 'Dry run completed - no changes were made'
   else
@@ -631,7 +634,7 @@ main() {
 
     # Test installation
     if command -v vrecord >/dev/null 2>&1; then
-      echo
+      >&2 echo
       info 'Test installation with: vrecord --version'
     fi
   fi
