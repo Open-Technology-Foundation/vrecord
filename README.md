@@ -108,6 +108,20 @@ The installer will:
 - Create configuration directory
 - Generate an uninstall script
 
+### Using make
+
+From a cloned directory:
+
+```bash
+sudo make install      # vrecord + vrecord-loop to /usr/local/bin, beep and
+                       # config.sample to /usr/local/share/vrecord, completion
+                       # to /etc/bash_completion.d (if present); then runs 'make check'
+make check             # Verify the installed commands are the ones found in PATH
+make help              # Targets and variables
+```
+
+`PREFIX`, `BINDIR`, `DATADIR`, `COMPDIR` and `DESTDIR` can be overridden, e.g. `make DESTDIR=/tmp/pkg install` for a staged package build. vrecord finds the beep sound under `/usr/local/share/vrecord` or `/usr/share/vrecord`; with any other `PREFIX`, set `BEEP_FILE` in `~/.vrecord/config`. A bare `make` only prints help.
+
 ### Manual Installation
 
 1. Ensure you have the required dependencies:
@@ -155,6 +169,11 @@ The installer will:
 If installed with the installer:
 ```bash
 ~/.vrecord/uninstall.sh
+```
+
+If installed with `make` (use the same variables as for install):
+```bash
+sudo make uninstall    # Recordings and ~/.vrecord are kept
 ```
 
 Or manually remove:
@@ -418,8 +437,10 @@ vrecord implements several security measures:
 ### Testing
 
 ```bash
-./run_tests.sh                           # Full test suite
-./tests/test_vrecord.sh basic_commands   # Specific suite
+make test                                # Full test suite (same as ./run_tests.sh)
+make test SUITE=loop                     # One suite
+make lint                                # shellcheck on all scripts
+./tests/test_vrecord.sh basic_commands   # Specific suite, without the audio-server check
 ./tests/test_vrecord.sh recording_basic
 ./tests/test_vrecord.sh pause_resume
 ./tests/test_vrecord.sh play
