@@ -18,7 +18,8 @@
 #                   does ('...' quoting, backslash escapes); then touches
 #                   $HOME/stub-merging and sleeps STUB_MERGE_DELAY seconds
 #   ffmpeg (other)  MP3 conversion: touches $HOME/stub-converting, sleeps
-#                   STUB_MP3_DELAY seconds, writes a small placeholder
+#                   STUB_MP3_DELAY seconds, writes a small placeholder; with
+#                   STUB_MP3_SIZE set, then extends it (sparse) to that size
 #   ffprobe         reports the fmt= of a capture's first line; "MP3 of" files
 #                   as MP3; anything else as 44.1 kHz stereo 16-bit PCM WAV
 #   ffplay          records its PID in $HOME/stub-ffplay.pid and appends it to
@@ -87,7 +88,8 @@ case $args in
     [[ ${STUB_FAIL:-} != mp3 ]] || { echo 'stub: mp3 failed' >&2; exit 1; }
     : > "$HOME"/stub-converting
     sleep "${STUB_MP3_DELAY:-0}"
-    printf 'MP3 of %s\n' "${in##*/}" > "$out" ;;
+    printf 'MP3 of %s\n' "${in##*/}" > "$out"
+    [[ -z ${STUB_MP3_SIZE:-} ]] || truncate -s "$STUB_MP3_SIZE" -- "$out" ;;
 esac
 STUB
 

@@ -21,7 +21,7 @@ shopt -s inherit_errexit shift_verbose extglob nullglob
 declare -rx PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Script metadata
-declare -r VERSION=1.3.0
+declare -r VERSION=1.3.1
 #shellcheck disable=SC2155 # realpath of the running script cannot fail
 declare -r SCRIPT_PATH=$(realpath -- "$0")
 declare -r SCRIPT_NAME=${SCRIPT_PATH##*/}
@@ -445,6 +445,11 @@ check_disk_space() {
 # Function to get timestamp for filename
 get_timestamp() { date +"%Y%m%d_%H%M%S"; }
 
+# file_size: the length of file $1, human-readable. Not its disk usage, which
+# plain du reports: ZFS allocates a new file's blocks seconds after the write
+# (a 327K MP3 just converted showed as 1.0K), and compression shrinks it.
+file_size() { du -h --apparent-size -- "$1" | cut -f1; }
+
 # list_recordings: Display WAV files or all files in recordings directory
 list_recordings() {
   local -i show_all=${1:-0}
@@ -467,7 +472,7 @@ list_recordings() {
         found=1
         basename=${file##*/}
         # A file removed mid-listing must not end the listing
-        size=$(du -h -- "$file" | cut -f1) || size='?'
+        size=$(file_size "$file") || size='?'
         date=$(stat -c %y -- "$file" | cut -d' ' -f1,2 | cut -d'.' -f1) || date='?'
         ext="${basename##*.}"
         printf "%2d. %-40s [%s] %-8s %s\n" "$count" "$basename" "$size" "[$ext]" "$date"
@@ -480,7 +485,7 @@ list_recordings() {
       found=1
       for file in "$RECORDING_DIR"/*.wav; do
         basename=${file##*/}
-        size=$(du -h -- "$file" | cut -f1) || size='?'
+        size=$(file_size "$file") || size='?'
         date=$(stat -c %y -- "$file" | cut -d' ' -f1,2 | cut -d'.' -f1) || date='?'
         printf "%2d. %-40s [%s] %s\n" "$count" "$basename" "$size" "$date"
         count+=1
@@ -867,7 +872,7 @@ start_recording() {
     # Resuming existing recording: the new audio is segment 1 of a new session
     output_file="$resume_file"
     info "Resuming recording '${output_file##*/}'" \
-         "Original file size: $(du -h -- "$output_file" | cut -f1)"
+         "Original file size: $(file_size "$output_file")"
     capture_file="$SEGMENTS_DIR"/segment_1.wav
     segment_count=1
     info "Recording new segment ${capture_file@Q}"
@@ -1167,7 +1172,7 @@ stop_recording() {
     info 'File info:'
     mediainfo -- "$main_file" 2>/dev/null | grep -E '(Duration|File size)' >&2 || true
   else
-    info "File size: $(du -h -- "$main_file" | cut -f1)"
+    info "File size: $(file_size "$main_file")"
   fi
 
   # Transcription runs on the MP3, so -n also skips it
@@ -1199,7 +1204,7 @@ convert_to_mp3() {
   if ffmpeg -y -i file:"$wav_file" -codec:a libmp3lame -b:a "$MP3_BITRATE" file:"$mp3_file" \
             </dev/null >/dev/null 2>>"$log_file"; then
     success "MP3 created: $mp3_file"
-    info "MP3 size: $(du -h -- "$mp3_file" | cut -f1)"
+    info "MP3 size: $(file_size "$mp3_file")"
 
     # Run transcription if requested and transcribe command is available
     if ((TRANSCRIBE)); then
@@ -1256,11 +1261,11 @@ show_status() {
   [[ "$state" == paused ]] || info "PID: $(cat -- "$PID_FILE")"
   info "Main file: $main_file"
   if ((segment_count > 0)); then
-    size=$(du -h -- "$main_file" 2>/dev/null | cut -f1) || size=''
+    size=$(file_size "$main_file" 2>/dev/null) || size=''
     info "Resume segments: $segment_count" "Original file size: ${size:-Unknown}"
   fi
   if [[ -f "$current_file" ]]; then
-    size=$(du -h -- "$current_file" 2>/dev/null | cut -f1) || size=''
+    size=$(file_size "$current_file" 2>/dev/null) || size=''
     if ((segment_count > 0)); then
       info "Current segment size: ${size:-Unknown}"
     else

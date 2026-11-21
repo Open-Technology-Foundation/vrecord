@@ -92,7 +92,7 @@ test_basic_commands() {
   
   start_test "vrecord --version shows version"
   output=$("$VRECORD" --version 2>&1 || true)
-  assert_contains "$output" "vrecord 1.3.0"
+  assert_contains "$output" "vrecord 1.3.1"
   
   start_test "vrecord --help shows help"
   output=$("$VRECORD" --help 2>&1 || true)
@@ -844,6 +844,47 @@ test_format() {
   drop_stub_home "$sh"
 }
 
+# Test: sizes shown are file lengths, not disk usage (stubs). A sparse file
+# stands in for one whose blocks ZFS has not allocated yet: plain du showed a
+# 327K MP3, written a moment earlier, as 1.0K.
+test_sizes() {
+  local -- sh out current
+  sh=$(make_stub_home) || setup_failed 'make_stub_home'
+  local -x HOME=$sh RECORDING_DIR=$sh/rec STATE_DIR=$sh/state BEEP_ENABLED=0
+  mkdir -p -- "$RECORDING_DIR" || setup_failed 'create the recording directory'
+  # A capture-format first line (the ffprobe stub reads it), then a hole to 2 MiB
+  printf 'AUDIO:sparse.wav:1 fmt=pcm_s16le/44100/2\n' > "$RECORDING_DIR"/sparse.wav \
+    || setup_failed 'write sparse.wav'
+  truncate -s 2M -- "$RECORDING_DIR"/sparse.wav || setup_failed 'extend sparse.wav'
+  truncate -s 3M -- "$RECORDING_DIR"/sparse.mp3 || setup_failed 'write sparse.mp3'
+
+  start_test "list shows a file's length, not its disk usage"
+  out=$("$VRECORD" list 2>&1) || setup_failed 'vrecord list'
+  assert_contains "$out" "[2.0M]"
+  out=$("$VRECORD" list --all 2>&1) || setup_failed 'vrecord list --all'
+  assert_contains "$out" "[3.0M]" "list --all must show the MP3's length"
+
+  start_test "start -r and status show the original file's length"
+  out=$("$VRECORD" start -r sparse.wav 2>&1) || setup_failed 'vrecord start -r sparse.wav'
+  assert_contains "$out" "Original file size: 2.0M"
+  assert_contains "$("$VRECORD" status 2>&1 || true)" "Original file size: 2.0M" \
+    "status must show it too"
+  "$VRECORD" -n stop >/dev/null 2>&1 || true
+
+  start_test "status shows the current file's length"
+  "$VRECORD" start cur >/dev/null 2>&1 || setup_failed 'vrecord start cur'
+  current=$(cat -- "$STATE_DIR"/session/current_file) || setup_failed 'read current_file'
+  wait_for_file "$current" || setup_failed 'wait for the capture file'
+  truncate -s 2M -- "$current" || setup_failed 'extend the capture file'
+  assert_contains "$("$VRECORD" status 2>&1 || true)" "Current file size: 2.0M"
+
+  start_test "stop shows the MP3's length"
+  out=$(STUB_MP3_SIZE=2M "$VRECORD" stop 2>&1 || true)
+  assert_contains "$out" "MP3 size: 2.0M"
+
+  drop_stub_home "$sh"
+}
+
 # Test: an error that points at a log points at one that still exists (stubs)
 test_logs() {
   local -- sh out log
@@ -1054,6 +1095,7 @@ main() {
     run_test_suite "Beep" test_beep
     run_test_suite "Format" test_format
     run_test_suite "Logs" test_logs
+    run_test_suite "Sizes" test_sizes
   else
     # Run specific test suite
     run_test_suite "$suite" "test_$suite"
